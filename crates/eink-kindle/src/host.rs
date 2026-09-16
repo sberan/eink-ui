@@ -29,6 +29,8 @@ pub enum Event {
     Key(u16),
     Power(String),
     Eval(String, mpsc::Sender<String>),
+    /// Power button released after being held this long.
+    PowerHeld(Duration),
 }
 
 static DEBUG_CLIENTS: std::sync::Mutex<Vec<std::net::TcpStream>> = std::sync::Mutex::new(Vec::new());
@@ -377,6 +379,17 @@ fn main() -> Result<()> {
                 let _ = reply.send(out);
                 None
             }
+            Ok(Event::PowerHeld(held)) => {
+                // same as the :reload debug command: fetch app.js from update_url, then restart
+                log(&format!("power held {}s: refetching the bundle", held.as_secs()));
+                let _ = fs::write(HAPTIC, "1\n");
+                let out = debug_command("reload");
+                log(&format!("reload: {out}"));
+                if !out.starts_with("ok") {
+                    set_error(&mut fb.borrow_mut(), &out);
+                }
+                None
+            }
             Ok(Event::Power(line)) => {
                 log(&format!("powerd: {line}"));
                 if line.starts_with("charging") || line.starts_with("notCharging") {
@@ -629,7 +642,7 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>) {
         }
         // RTC wake: give the app a moment (its own timers can refresh data), then sleep again
         if let Ok(ev) = rx.recv_timeout(Duration::from_secs(20)) {
-            if !matches!(ev, Event::Power(_) | Event::Eval(..)) {
+            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::PowerHeld(..)) {
                 break;
             }
         }

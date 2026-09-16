@@ -34,6 +34,10 @@ What you get on connect:
   | `:exit` | hand the screen back to the stock Kindle UI |
   | `:battery` | charge level and charger state |
 
+  Without a laptop: hold the power button for 10 seconds. The host buzzes once and runs the
+  same steps as `:reload` (fetch `app.js` from the update URL, restart). A failed download shows
+  the error badge and leaves the running bundle alone.
+
 ## Wireless deploy loop
 
 No USB cable after the first install. The host fetches from `update_url` in
