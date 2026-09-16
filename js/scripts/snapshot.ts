@@ -5,6 +5,7 @@ import { deflateSync } from 'node:zlib';
 import { createElement } from 'react';
 import { render, unmount, handleEvent } from '../renderer/index.js';
 import { TodoApp } from '../apps/todo/index.js';
+import { SAMPLE } from '../apps/todo/sample.js';
 import { CrosswordApp } from '../apps/crossword/index.js';
 
 const wasmBytes = readFileSync(process.argv[3] ?? new URL('../sim/pkg/eink_wasm.wasm', import.meta.url));
@@ -68,13 +69,8 @@ function save(name: string) {
   console.error('wrote', name, api.width, 'x', api.height);
 }
 
-// ---- todo: live list if reachable, else the bundled sample
-let data: any;
-try {
-  const r = await fetch('https://kindle-todo-one.vercel.app/api/list');
-  if (r.ok) data = await r.json();
-} catch {}
-render(createElement(TodoApp, data ? { data } : {}));
+// ---- todo: always the bundled sample (the published image must never show a real list)
+render(createElement(TodoApp, { data: SAMPLE }));
 save('todo');
 unmount();
 
