@@ -29,8 +29,8 @@ pub enum Event {
     Key(u16),
     Power(String),
     Eval(String, mpsc::Sender<String>),
-    /// Power button released after being held this long.
-    PowerHeld(Duration),
+    /// Five quick power-button presses: restart, which refetches the bundle.
+    Reload,
 }
 
 static DEBUG_CLIENTS: std::sync::Mutex<Vec<std::net::TcpStream>> = std::sync::Mutex::new(Vec::new());
@@ -167,9 +167,12 @@ fn main() -> Result<()> {
     }
     lipc_set("com.lab126.powerd", "preventScreenSaver", "1");
 
-    let bundle = fs::read_to_string(format!("{DIR}/app.js")).context("read app.js")?;
+    let (bundle, fetch_error) = load_bundle()?;
     let fb = Rc::new(RefCell::new(epdc::Epdc::open().context("open framebuffer")?));
     log(&fb.borrow().describe());
+    if let Some(e) = fetch_error {
+        set_error(&mut fb.borrow_mut(), &e);
+    }
     let scene = Rc::new(RefCell::new(Scene::new()));
     let (tx, rx) = mpsc::channel::<Event>();
     input::start(tx.clone());
@@ -379,16 +382,10 @@ fn main() -> Result<()> {
                 let _ = reply.send(out);
                 None
             }
-            Ok(Event::PowerHeld(held)) => {
-                // same as the :reload debug command: fetch app.js from update_url, then restart
-                log(&format!("power held {}s: refetching the bundle", held.as_secs()));
+            Ok(Event::Reload) => {
+                log("power button x5: reload");
                 let _ = fs::write(HAPTIC, "1\n");
-                let out = debug_command("reload");
-                log(&format!("reload: {out}"));
-                if !out.starts_with("ok") {
-                    set_error(&mut fb.borrow_mut(), &out);
-                }
-                None
+                restart_self("/var/tmp/eink-host-run");
             }
             Ok(Event::Power(line)) => {
                 log(&format!("powerd: {line}"));
@@ -502,12 +499,48 @@ fn debug_server(tx: mpsc::Sender<Event>) {
     }
 }
 
+const DEFAULT_UPDATE_URL: &str = "https://kindle-todo-one.vercel.app/";
+
+/// keys.conf: `update_url=https://host/dir/` — a location serving app.js (and eink-host).
 fn update_url() -> String {
-    // keys.conf: update_url=http://<mac-ip>:8787/  (a directory serving app.js and eink-host)
     fs::read_to_string(format!("{DIR}/keys.conf"))
         .ok()
         .and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("update_url=").map(|v| v.trim().to_string())))
-        .unwrap_or_else(|| String::from("http://192.168.0.144:8787/"))
+        .unwrap_or_else(|| String::from(DEFAULT_UPDATE_URL))
+}
+
+fn set_update_url(url: &str) -> std::io::Result<()> {
+    let url = if url.ends_with('/') { url.to_string() } else { format!("{url}/") };
+    fs::write(format!("{DIR}/keys.conf"), format!("update_url={url}\n"))
+}
+
+/// The device holds nothing but the URL: every start pulls app.js from it (a few tries, Wi-Fi
+/// may still be coming up), keeps a copy for the next offline start, and falls back to that copy.
+fn load_bundle() -> Result<(String, Option<String>)> {
+    let url = format!("{}app.js", update_url());
+    let cached = format!("{DIR}/app.js");
+    let mut last_err = String::new();
+    for attempt in 1..=4 {
+        match download(&url) {
+            Ok(b) if !b.is_empty() => {
+                let text = String::from_utf8(b).context("app.js is not UTF-8")?;
+                let _ = fs::write(&cached, &text);
+                log(&format!("app.js: {} bytes from {url}", text.len()));
+                return Ok((text, None));
+            }
+            Ok(_) => last_err = format!("GET {url}: empty body"),
+            Err(e) => last_err = format!("{e:#}"),
+        }
+        log(&format!("bundle fetch {attempt}/4 failed: {last_err}"));
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    match fs::read_to_string(&cached) {
+        Ok(text) => {
+            log("using the cached app.js");
+            Ok((text, Some(format!("bundle fetch failed, running the cached copy: {last_err}"))))
+        }
+        Err(_) => anyhow::bail!("no bundle: {last_err} and no cached app.js"),
+    }
 }
 
 fn download(url: &str) -> Result<Vec<u8>> {
@@ -527,7 +560,7 @@ fn restart_self(path: &str) -> ! {
 }
 
 /// Over-the-air maintenance, no USB needed:
-///   :reload         fetch app.js from update_url and restart
+///   :reload         restart (every start fetches app.js from update_url)
 ///   :update         fetch eink-host from update_url, install, restart
 ///   :restart        restart with the current files
 ///   :exit           hand the screen back to the Kindle UI
@@ -535,21 +568,11 @@ fn restart_self(path: &str) -> ! {
 fn debug_command(cmd: &str) -> String {
     match cmd {
         "reload" => {
-            let url = format!("{}app.js", update_url());
-            match download(&url) {
-                Ok(b) => {
-                    if let Err(e) = fs::write(format!("{DIR}/app.js"), &b) {
-                        return format!("downloaded {} bytes but could not write app.js: {e}", b.len());
-                    }
-                    log(&format!("reloaded app.js ({} bytes) from {url}", b.len()));
-                    std::thread::spawn(|| {
-                        std::thread::sleep(Duration::from_millis(300));
-                        restart_self("/var/tmp/eink-host-run");
-                    });
-                    format!("ok, {} bytes; restarting", b.len())
-                }
-                Err(e) => format!("reload failed: {e:#}"),
-            }
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                restart_self("/var/tmp/eink-host-run");
+            });
+            "restarting; the start refetches app.js".into()
         }
         "update" => {
             let url = format!("{}eink-host", update_url());
@@ -586,8 +609,13 @@ fn debug_command(cmd: &str) -> String {
             });
             "exiting to Kindle UI".into()
         }
+        c if c.starts_with("url ") => match set_update_url(c[4..].trim()) {
+            Ok(()) => format!("update_url={}", update_url()),
+            Err(e) => format!("could not write keys.conf: {e}"),
+        },
+        "url" => format!("update_url={}", update_url()),
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/]".into(),
     }
 }
 
@@ -642,7 +670,7 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>) {
         }
         // RTC wake: give the app a moment (its own timers can refresh data), then sleep again
         if let Ok(ev) = rx.recv_timeout(Duration::from_secs(20)) {
-            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::PowerHeld(..)) {
+            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::Reload) {
                 break;
             }
         }

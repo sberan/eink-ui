@@ -28,21 +28,26 @@ What you get on connect:
 
   | command | effect |
   |---|---|
-  | `:reload` | download `app.js` from the update URL, then restart the host with the new bundle |
+  | `:reload` | restart; every start downloads `app.js` from the update URL (cached copy if offline) |
   | `:update` | download a new `eink-host` binary, install it, restart |
   | `:restart` | restart with the files already on the device |
   | `:exit` | hand the screen back to the stock Kindle UI |
   | `:battery` | charge level and charger state |
+  | `:url https://host/dir/` | set the update URL (`:url` alone shows it) |
 
-  Without a laptop: hold the power button for 10 seconds. The host buzzes once and runs the
-  same steps as `:reload` (fetch `app.js` from the update URL, restart). A failed download shows
-  the error badge and leaves the running bundle alone.
+  Without a laptop: press the power button five times within four seconds. The host buzzes once
+  and restarts, which refetches `app.js`. (A long hold is not an option: the Kindle's own power
+  manager reboots the device after a few seconds.) If the download fails the host runs the cached
+  copy and shows the error badge.
 
 ## Wireless deploy loop
 
-No USB cable after the first install. The host fetches from `update_url` in
-`/mnt/us/todo-app/keys.conf` (default `http://192.168.0.144:8787/`, a directory on your machine
-served by any static HTTP server). `kindle/push.sh` does the whole round trip:
+No USB cable after the first install, and nothing to copy onto the device but the URL: at every
+start the host downloads `app.js` from `update_url` in `/mnt/us/todo-app/keys.conf` (default
+`https://kindle-todo-one.vercel.app/`; set it with `:url`) and keeps a cached copy for offline
+starts. Publish a new bundle wherever that URL points, then restart the host with `:reload`, or
+with five presses of the power button. For a tight local loop, point the URL at a directory on
+your machine served by any static HTTP server; `kindle/push.sh` does that round trip:
 
 ```sh
 cd js && ./build.sh && cd ..      # new bundle

@@ -1,11 +1,13 @@
 //! Reads every /dev/input/event* device: multitouch taps on the panel and key presses
 //! from the PagePress keypad, scaled to screen coordinates via EVIOCGABS.
 use crate::{log, Event};
-use std::{fs::File, io::Read, os::unix::io::AsRawFd, sync::{mpsc::Sender, Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{fs::File, io::Read, os::unix::io::AsRawFd, sync::mpsc::Sender, time::{Duration, Instant}};
 
 const KEY_POWER: u16 = 116;
-/// Holding the power button this long asks the host for a full restart.
-pub const POWER_HOLD: Duration = Duration::from_secs(10);
+/// This many power-button presses inside the window ask the host for a reload. A long hold is
+/// not usable: powerd reboots the device after a few seconds regardless of what we do.
+pub const RELOAD_CLICKS: usize = 5;
+pub const RELOAD_WINDOW: Duration = Duration::from_secs(4);
 
 const SCREEN_W: i64 = 1072;
 const SCREEN_H: i64 = 1448;
@@ -55,7 +57,7 @@ fn read_device(name: String, mut f: File, mx: i64, my: i64, tx: Sender<Event>) {
     let mut buf = [0u8; 16 * 32];
     let (mut x, mut y): (i64, i64) = (-1, -1);
     let mut touching = false;
-    let power_held = Arc::new(AtomicBool::new(false));
+    let mut power_clicks: Vec<Instant> = Vec::new();
     loop {
         let n = match f.read(&mut buf) {
             Ok(n) => n,
@@ -93,23 +95,16 @@ fn read_device(name: String, mut f: File, mx: i64, my: i64, tx: Sender<Event>) {
                             emit_tap(x, y, mx, my, &tx);
                         }
                     } else if code == KEY_POWER {
-                        // a timer fires while the button is still down, so the user gets the buzz
-                        // at exactly the hold length instead of on release
-                        match val {
-                            1 => {
-                                power_held.store(true, Ordering::SeqCst);
+                        if val == 1 {
+                            let now = Instant::now();
+                            power_clicks.retain(|t| now.duration_since(*t) < RELOAD_WINDOW);
+                            power_clicks.push(now);
+                            if power_clicks.len() >= RELOAD_CLICKS {
+                                power_clicks.clear();
+                                let _ = tx.send(Event::Reload);
+                            } else {
                                 let _ = tx.send(Event::Key(code));
-                                let held = power_held.clone();
-                                let tx = tx.clone();
-                                std::thread::spawn(move || {
-                                    std::thread::sleep(POWER_HOLD);
-                                    if held.load(Ordering::SeqCst) {
-                                        let _ = tx.send(Event::PowerHeld(POWER_HOLD));
-                                    }
-                                });
                             }
-                            0 => power_held.store(false, Ordering::SeqCst),
-                            _ => {}
                         }
                     } else if val == 1 && code < 256 {
                         let _ = tx.send(Event::Key(code));
