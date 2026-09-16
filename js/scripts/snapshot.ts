@@ -47,7 +47,7 @@ const api = {
 
 // ---- minimal PNG encoder (grayscale 8-bit)
 const CRC = new Int32Array(256).map((_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c; });
-function crc32(buf: Uint8Array) { let c = -1; for (const b of buf) c = CRC[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ -1) >>> 0; }
+function crc32(buf: Uint8Array) { let c = -1; for (const b of buf) c = CRC[(c ^ b) & 0xff]! ^ (c >>> 8); return (c ^ -1) >>> 0; }
 function chunk(type: string, data: Uint8Array) {
   const t = enc.encode(type); const len = new Uint8Array(4); new DataView(len.buffer).setUint32(0, data.length);
   const body = new Uint8Array(t.length + data.length); body.set(t); body.set(data, t.length);
