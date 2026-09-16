@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eink-ui simulator</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #2a2b2e; color: #e8e8e8;
+         font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #wrap { display: flex; height: 100vh; }
+
+  #sidebar { flex: 0 0 240px; overflow-y: auto; background: #212225;
+             border-right: 1px solid #000; padding: 10px 0 24px; }
+  #sidebar h1 { font-size: 13px; margin: 6px 14px 12px; letter-spacing: .04em; }
+  #sidebar .group { margin-top: 14px; padding: 4px 14px; color: #8b8f97;
+                    text-transform: uppercase; letter-spacing: .08em; font-size: 11px; }
+  #sidebar a { display: block; padding: 5px 14px 5px 22px; color: #d6d8dc;
+               text-decoration: none; border-left: 3px solid transparent; }
+  #sidebar a:hover { background: #2e3034; }
+  #sidebar a.on { background: #34363b; color: #fff; border-left-color: #8ab4f8; }
+
+  #main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+  #bar { display: flex; gap: 12px; align-items: center; padding: 8px 12px;
+         background: #1c1d20; border-bottom: 1px solid #000; flex: 0 0 auto; }
+  #bar button { font: inherit; padding: 4px 12px; background: #3a3c41; color: #eee;
+                border: 1px solid #55575c; border-radius: 4px; cursor: pointer; }
+  #bar button:hover { background: #47494f; }
+  #title { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #host { margin-left: auto; color: #a8abb2; white-space: nowrap; }
+  #bar button { white-space: nowrap; }
+  #stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+           overflow: hidden; padding: 10px; }
+  canvas { background: #fff; box-shadow: 0 0 0 1px #000, 0 10px 40px rgba(0,0,0,.6); }
+  #status { flex: 0 0 auto; padding: 6px 12px; background: #1c1d20; border-top: 1px solid #000;
+            white-space: pre-wrap; line-height: 1.5; min-height: 3.2em; }
+  .k { color: #8ab4f8; }
+  .w { color: #f7b267; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <nav id="sidebar"><h1>eink-ui</h1></nav>
+  <div id="main">
+    <div id="bar">
+      <span id="title"></span>
+      <button id="full">Full refresh</button>
+      <span id="host"></span>
+    </div>
+    <div id="stage"><canvas id="screen" width="1072" height="1448"></canvas></div>
+    <div id="status"></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

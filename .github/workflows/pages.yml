@@ -1,0 +1,60 @@
+name: pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: wasm-${{ hashFiles('Cargo.lock') }}
+      - name: Build the core for the browser
+        run: |
+          ./fonts.sh
+          sudo apt-get install -y -qq binaryen >/dev/null
+          cargo build --release -p eink-wasm --target wasm32-unknown-unknown
+          wasm-opt -Os --enable-bulk-memory --enable-sign-ext --enable-nontrapping-float-to-int --enable-mutable-globals \
+            -o js/sim/pkg/eink_wasm.wasm target/wasm32-unknown-unknown/release/eink_wasm.wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - name: Test and build the site
+        working-directory: js
+        run: |
+          npm ci
+          npm test
+          npm run build:pages
+          npm run snapshot
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: js/pages
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

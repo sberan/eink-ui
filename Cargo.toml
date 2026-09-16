@@ -1,0 +1,10 @@
+[workspace]
+members = ["crates/eink-core", "crates/eink-wasm", "crates/eink-kindle"]
+resolver = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "unwind" # the Kindle host catches panics and shows an error badge instead of dying
+strip = true

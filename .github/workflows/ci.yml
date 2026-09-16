@@ -1,0 +1,25 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: ./fonts.sh && cargo test --release -p eink-core
+  kindle:
+    runs-on: ubuntu-latest
+    container: messense/rust-musl-cross:armv7-musleabihf
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update -qq && apt-get install -y -qq libclang-dev curl >/dev/null && ./fonts.sh
+      - run: cargo build --release -p eink-kindle --target armv7-unknown-linux-musleabihf
+        env:
+          BINDGEN_EXTRA_CLANG_ARGS: --sysroot=/usr/local/musl/armv7-unknown-linux-musleabihf -I/usr/local/musl/armv7-unknown-linux-musleabihf/include
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eink-host
+          path: target/armv7-unknown-linux-musleabihf/release/eink-host

@@ -1,0 +1,13 @@
+target/
+node_modules/
+js/dist/
+js/sim/app.js
+js/sim-dist/
+js/storybook-static/
+js/pages/
+js/sim/pkg/eink_wasm.wasm
+dist/
+*.png
+!docs/*.png
+.DS_Store
+._*

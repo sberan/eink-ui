@@ -1,0 +1,9 @@
+node_modules/
+# build outputs
+dist/
+pages/
+# emitted by `npm run sim` (esbuild --servedir writes the bundle here)
+sim/app.js
+sim/app.js.map
+# compiled from sim/pkg/eink_wasm.ts by `npm run build:glue`
+sim/pkg/eink_wasm.js
