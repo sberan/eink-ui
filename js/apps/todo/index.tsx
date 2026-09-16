@@ -81,14 +81,17 @@ function countDone(sections: readonly TodoSection[]): { done: number; total: num
   return { done, total };
 }
 
-/** POST the toggle to the server if the host exposes fetch; no-op in the simulator. */
-function pushToggle(id: string, done: boolean, endpoint: string): void {
+/**
+ * POST the flip to the server if the host exposes fetch; no-op in the simulator.
+ * The API's toggle route flips server state for {date,id}, so it is called once per tap.
+ */
+function pushToggle(date: string, id: string, api: string): void {
   const host = globalThis.__eink;
-  if (!host?.fetch) return;
+  if (!host?.fetch || !api) return;
   try {
-    host.fetch(`${endpoint}/${encodeURIComponent(id)}`, {
+    host.fetch(`${api}/api/toggle`, {
       method: 'POST',
-      body: JSON.stringify({ done }),
+      body: JSON.stringify({ date, id }),
     });
   } catch (err) {
     // offline Kindle: the local toggle still stands
@@ -98,7 +101,10 @@ function pushToggle(id: string, done: boolean, endpoint: string): void {
 
 export interface TodoAppProps {
   data?: TodoList | undefined;
-  endpoint?: string;
+  /** Origin of the list API (no trailing slash); empty = offline, toggles stay local. */
+  api?: string;
+  onHeaderTap?: (() => void) | undefined;
+  onFooterTap?: (() => void) | undefined;
 }
 
 /** Resolves the list to render: the prop, then the host payload, then the sample. */
@@ -108,7 +114,7 @@ export function resolveList(data?: TodoList): TodoList {
   return isTodoList(injected) ? injected : SAMPLE;
 }
 
-export function TodoApp({ data, endpoint = '/api/items' }: TodoAppProps) {
+export function TodoApp({ data, api = '', onHeaderTap, onFooterTap }: TodoAppProps) {
   const initial = useMemo(() => resolveList(data), [data]);
   const [sections, setSections] = useState<readonly TodoSection[]>(initial.sections);
   const [shownDate, setShownDate] = useState(initial.date);
@@ -128,12 +134,12 @@ export function TodoApp({ data, endpoint = '/api/items' }: TodoAppProps) {
         items: s.items.map((it) => {
           if (it.id !== id) return it;
           const next: TodoItem = { ...it, done: !it.done };
-          pushToggle(id, next.done, endpoint);
+          pushToggle(initial.date, id, api);
           return next;
         }),
       };
     }));
-  }, [endpoint]);
+  }, [api, initial.date]);
 
   const head = useMemo(() => formatHeader(initial.date), [initial.date]);
   const { done, total } = countDone(sections);
@@ -146,8 +152,10 @@ export function TodoApp({ data, endpoint = '/api/items' }: TodoAppProps) {
         padding: [PAGE_PAD, PAGE_PAD, PAGE_PAD, PAGE_PAD],
       }}
     >
-      <eink-text text={head.day} font_size={HEADER_DAY} bold style={{ height: HEADER_DAY + 12 }} />
-      <eink-text text={head.date} font_size={HEADER_DATE} color={90} style={{ height: HEADER_DATE + 10 }} />
+      <eink-box onTap={onHeaderTap} style={{ flex_direction: 'column' }}>
+        <eink-text text={head.day} font_size={HEADER_DAY} bold style={{ height: HEADER_DAY + 12 }} />
+        <eink-text text={head.date} font_size={HEADER_DATE} color={90} style={{ height: HEADER_DATE + 10 }} />
+      </eink-box>
       <eink-box bg={0} style={{ height: 3, margin: [14, 0, 0, 0] }} />
       <eink-box style={{ flex_direction: 'column', flex_grow: 1 }}>
         {sections.map((s) => (
@@ -155,13 +163,15 @@ export function TodoApp({ data, endpoint = '/api/items' }: TodoAppProps) {
         ))}
       </eink-box>
       <eink-box bg={0} style={{ height: 1, margin: [0, 0, 12, 0] }} />
-      <eink-text
-        text={`${done}/${total} done`}
-        font_size={FOOTER_SIZE}
-        color={90}
-        align="right"
-        style={{ height: FOOTER_SIZE + 8 }}
-      />
+      <eink-box onTap={onFooterTap} style={{ flex_direction: 'column' }}>
+        <eink-text
+          text={`${done}/${total} done`}
+          font_size={FOOTER_SIZE}
+          color={90}
+          align="right"
+          style={{ height: FOOTER_SIZE + 8 }}
+        />
+      </eink-box>
     </eink-box>
   );
 }

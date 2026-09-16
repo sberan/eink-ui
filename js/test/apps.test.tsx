@@ -54,14 +54,14 @@ describe('todo app', () => {
     const fetchSpy = vi.fn(() => res);
     h.host.fetch = fetchSpy;
     const { TodoApp } = await import('../apps/todo/index.js');
-    h.renderer.render(<TodoApp />);
+    h.renderer.render(<TodoApp api="https://example.test" />);
     const target = h.nodes().find((n) => n.paint.text === 'Call Mum');
     h.mock.emit({ type: 'tap', id: target!.parent, x: 0, y: 0 });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchSpy.mock.calls[0] as unknown as [string, { method: string; body: string }];
-    expect(url).toBe('/api/items/v1');
+    expect(url).toBe('https://example.test/api/toggle');
     expect(opts.method).toBe('POST');
-    expect(JSON.parse(opts.body)).toEqual({ done: true });
+    expect(JSON.parse(opts.body)).toEqual({ date: '2026-09-15', id: 'v1' });
     // the bug this guards: no key may be present-but-undefined on the host payload
     expect(Object.values(opts).every((v) => v !== undefined)).toBe(true);
   });

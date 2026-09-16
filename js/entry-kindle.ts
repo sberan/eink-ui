@@ -10,7 +10,10 @@ import {
   countItems, describeTodoListProblem, isTodoList, type TodoList,
 } from './apps/todo/schema.js';
 
-const LIST_ENDPOINT = '/api/items';
+const API = 'https://kindle-todo-one.vercel.app';
+const LIST_ENDPOINT = `${API}/api/list`;
+/** A failed start-up fetch (Wi-Fi not up yet) is retried on this cadence until the list arrives. */
+const RETRY_MS = 30_000;
 
 /** Page-turn buttons; the raw key is logged so an unmapped one is easy to spot. */
 const PREV_KEYS = new Set(['PagePrev', 'PageUp', 'PREV', 'ArrowLeft', 'ArrowUp']);
@@ -31,7 +34,23 @@ export function showTodo(data: TodoList): void {
   current = data;
   log(`list loaded: date=${data.date} items=${countItems(data)} `
     + `prev=${data.prev ?? 'none'} next=${data.next ?? 'none'}`);
-  render(React.createElement(TodoApp, { key: data.date, data, endpoint: LIST_ENDPOINT }));
+  render(React.createElement(TodoApp, {
+    key: data.date, data, api: API, onHeaderTap: refresh, onFooterTap: exitToKindle,
+  }));
+}
+
+/** Header tap: refetch the shown day (or the live list if we are still on the sample). */
+export function refresh(): void {
+  log('header tap: refresh');
+  if (current && current !== SAMPLE) loadDay(current.date);
+  else showLoaded();
+  globalThis.__eink?.request_full();
+}
+
+/** Footer tap: hand the screen back to the Kindle UI. */
+export function exitToKindle(): void {
+  log('footer tap: exit');
+  globalThis.__eink_exit?.();
 }
 
 /** Fetches one day and shows it. Every failure path logs and leaves the screen alone. */
@@ -103,13 +122,23 @@ export function loadList(): TodoList {
   return SAMPLE;
 }
 
+/** Shows whatever loadList returns; while that is the sample, keeps retrying the live list. */
+export function showLoaded(): void {
+  const list = loadList();
+  showTodo(list);
+  if (list === SAMPLE && globalThis.__eink?.fetch) {
+    log(`live list unavailable; retrying in ${RETRY_MS / 1000}s`);
+    setTimeout(() => { if (current === SAMPLE) showLoaded(); }, RETRY_MS);
+  }
+}
+
 export function main(): void {
   if ((globalThis.__eink_app ?? 'todo') === 'crossword') {
     render(React.createElement(CrosswordApp));
     return;
   }
   registerKeys(onKey);
-  showTodo(loadList());
+  showLoaded();
 }
 
 main();
