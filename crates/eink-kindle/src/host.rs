@@ -166,6 +166,8 @@ fn main() -> Result<()> {
         lipc_set("com.lab126.deviced", prop, "1");
     }
     lipc_set("com.lab126.powerd", "preventScreenSaver", "1");
+    // the stock firewall drops inbound Wi-Fi connections: open the debug port
+    let _ = Command::new("iptables").args(["-I", "INPUT", "-p", "tcp", "--dport", "2323", "-j", "ACCEPT"]).status();
 
     let (bundle, fetch_error) = load_bundle()?;
     let fb = Rc::new(RefCell::new(epdc::Epdc::open().context("open framebuffer")?));
