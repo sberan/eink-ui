@@ -958,6 +958,8 @@ fn fetch_if_changed(url: &str, etag: Option<&str>) -> Result<Option<(Vec<u8>, Op
         req = req.set("If-None-Match", e);
     }
     match req.call() {
+        // ureq hands a 304 back as a success with an empty body
+        Ok(resp) if resp.status() == 304 => Ok(None),
         Ok(resp) => {
             let tag = resp.header("ETag").map(str::to_string);
             let mut buf = Vec::new();

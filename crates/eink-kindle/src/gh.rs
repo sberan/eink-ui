@@ -79,13 +79,23 @@ impl Github {
         if let Some(e) = etag {
             req = req.set("If-None-Match", e);
         }
-        let resp = match body {
+        let send = |req: ureq::Request| match body {
             Some(b) => req.send_string(&b.to_string()),
             None => req.call(),
         };
-        let resp = match resp {
+        let resp = match send(req.clone()) {
             Ok(r) => r,
             Err(ureq::Error::Status(_, r)) => r,
+            Err(ureq::Error::Transport(t)) if method == "GET" => {
+                // the first request after a wake sometimes times out while the radio settles
+                log(&format!("github: {t}; retrying once"));
+                std::thread::sleep(Duration::from_secs(3));
+                match send(req) {
+                    Ok(r) => r,
+                    Err(ureq::Error::Status(_, r)) => r,
+                    Err(e) => bail!("{method} {url}: {e}"),
+                }
+            }
             Err(e) => bail!("{method} {url}: {e}"),
         };
         let status = resp.status();
