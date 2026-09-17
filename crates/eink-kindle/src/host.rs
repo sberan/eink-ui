@@ -471,6 +471,10 @@ fn main() -> Result<()> {
         }
         {
             let sc = scene.clone();
+            eink.set("hit_line", Function::new(cx.clone(), move |x: i32, y: i32| sc.borrow().hit_line(x, y).map(|l| l as i32).unwrap_or(-1))?)?;
+        }
+        {
+            let sc = scene.clone();
             let fbc = fb.clone();
             eink.set("commit", Function::new(cx.clone(), move || {
                 let damage = sc.borrow_mut().commit();
@@ -491,8 +495,13 @@ fn main() -> Result<()> {
         }
         eink.set("clear_error", Function::new(cx.clone(), || clear_error())?)?;
         eink.set("buzz", Function::new(cx.clone(), || {
+            let t = Instant::now();
             if let Err(e) = fs::write(HAPTIC, "1\n") {
                 log(&format!("haptic: {e}"));
+            }
+            let ms = t.elapsed().as_millis();
+            if ms >= 10 {
+                log(&format!("buzz: {ms} ms"));
             }
         })?)?;
         // fetch never blocks the UI: the request runs on a thread and the promise is settled
@@ -547,9 +556,14 @@ fn main() -> Result<()> {
         {
             let cmd = repo_cmd.clone();
             eink.set("write_file", Function::new(cx.clone(), move |p: String, text: String| {
+                let t = Instant::now();
                 match repo::write_file(&p, &text) {
-                    Ok(()) => { let _ = cmd.send(repo::SyncCmd::Commit(p)); }
+                    Ok(()) => { let _ = cmd.send(repo::SyncCmd::Commit(p.clone())); }
                     Err(e) => log(&format!("write_file {p}: {e:#}")),
+                }
+                let ms = t.elapsed().as_millis();
+                if ms >= 10 {
+                    log(&format!("write_file {p}: {ms} ms"));
                 }
             })?)?;
         }
