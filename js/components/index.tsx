@@ -221,6 +221,9 @@ export const Keyboard = memo(function Keyboard({ onKey, style }: KeyboardProps) 
   );
 });
 
+export { Markdown, parseMarkdown, toggleTaskLine, inlineText } from './markdown.js';
+export type { MarkdownProps, MdBlock } from './markdown.js';
+
 // ---- StatusBar --------------------------------------------------------------
 
 export const STATUS_BAR_HEIGHT = 40;

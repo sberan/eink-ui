@@ -25,7 +25,19 @@ export interface DamageRect {
 
 export type TapEvent = { readonly type: 'tap'; readonly id: NodeId; readonly x: number; readonly y: number };
 export type KeyEvent = { readonly type: 'key'; readonly key: string };
-export type EinkInputEvent = TapEvent | KeyEvent;
+/** The synced repository changed on disk (a pull landed); these paths should be re-read. */
+export type FilesEvent = { readonly type: 'files'; readonly changed: readonly string[] };
+export type SyncEvent = { readonly type: 'sync'; readonly sync: SyncState };
+export type EinkInputEvent = TapEvent | KeyEvent | FilesEvent | SyncEvent;
+
+export interface SyncState {
+  readonly state: 'idle' | 'syncing' | 'offline' | 'error';
+  /** Local commits not yet pushed. */
+  readonly pending: number;
+  /** Milliseconds since the epoch, or null before the first successful sync. */
+  readonly last_sync: number | null;
+  readonly error: string | null;
+}
 
 export type EinkListener = (ev: EinkInputEvent) => void;
 
@@ -84,6 +96,17 @@ export interface EinkHost {
   storage_set(key: string, value: string): void;
   storage_remove(key: string): void;
   storage_keys(): string[];
+  /**
+   * The synced repository: text files by repository-relative path. A write lands on disk at
+   * once and is committed and pushed in the background; a pull raises a `files` event.
+   */
+  read_file(path: string): string | null;
+  write_file(path: string, text: string): void;
+  /** Repository-relative paths under `prefix`, sorted. */
+  list_files(prefix: string): string[];
+  sync_state(): SyncState;
+  /** Pull and push now; progress arrives as `sync` events. */
+  sync(): void;
   /** Present on the Kindle (also installed as globalThis.fetch); absent in the simulator and tests. */
   fetch?(url: string, opts?: EinkFetchOptions): Promise<EinkFetchResponse>;
 }

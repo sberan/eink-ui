@@ -5,8 +5,9 @@
 
 import type {
   DamageRect, EinkListener, EinkProps, EinkStyle, NodeId, NodeKind,
-  RefreshMode, Sides, SimulatedEinkHost, TextAlign, Unsubscribe,
+  RefreshMode, Sides, SimulatedEinkHost, SyncState, TextAlign, Unsubscribe,
 } from '../host/eink.js';
+import { SAMPLE_FILES } from '../files/sample.js';
 
 export const SCREEN_W = 1072;
 export const SCREEN_H = 1448;
@@ -174,6 +175,9 @@ export interface MockOptions {
 }
 
 export interface MockEinkHost extends SimulatedEinkHost {
+  /** The fake repository, for tests: contents by path and every write_file call. */
+  readonly files: Map<string, string>;
+  readonly writes: [string, string][];
   /** The mock can always unsubscribe, unlike the Kindle host. */
   on(cb: EinkListener): Unsubscribe;
   fb_len(): number;
@@ -444,6 +448,9 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
   }
 
   const storage = new Map<string, string>();
+  const files = new Map<string, string>(Object.entries(SAMPLE_FILES));
+  const writes: [string, string][] = [];
+  let syncState: SyncState = { state: 'idle', pending: 0, last_sync: null, error: null };
   const api: MockEinkHost = {
     width: W,
     height: H,
@@ -587,6 +594,13 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
     storage_set(k: string, v: string) { storage.set(k, v); },
     storage_remove(k: string) { storage.delete(k); },
     storage_keys() { return [...storage.keys()]; },
+    read_file(p: string) { return files.get(p) ?? null; },
+    write_file(p: string, t: string) { files.set(p, t); writes.push([p, t]); },
+    list_files(prefix: string) { return [...files.keys()].filter((p) => p.startsWith(prefix)).sort(); },
+    sync_state() { return syncState; },
+    sync() { syncState = { ...syncState, last_sync: Date.now() }; },
+    files,
+    writes,
 
     emit(ev): void { listener?.(ev); },
     fb(): Uint8Array { return fb; },

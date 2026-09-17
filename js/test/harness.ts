@@ -48,6 +48,7 @@ export async function makeHarness(): Promise<Harness> {
   globalThis.__eink = host;
   const { vi } = await import('vitest');
   vi.resetModules();
+  (await import('../files/index.js')).resetFiles();
   const renderer = await import('../renderer/index.js');
 
   const nodes = () => [...mock._nodes.values()];

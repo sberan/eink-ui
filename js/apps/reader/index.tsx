@@ -1,0 +1,87 @@
+import React, { useCallback, useState } from 'react';
+import { Button, Column, Keyboard, Markdown, Row, StatusBar, Text, toggleTaskLine } from '../../components/index.js';
+import { usePageButtons } from '../../device/index.js';
+import { useFile, useFiles, useSync, writeFile } from '../../files/index.js';
+import { useStoredState } from '../../storage/index.js';
+
+const PAGE_PAD = 36;
+
+export interface ReaderAppProps {
+  /** Repository folder to page through; the newest file opens first. */
+  folder?: string;
+}
+
+function title(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1).replace(/\.md$/, '');
+}
+
+function appendTask(text: string | null, task: string): string {
+  const body = (text ?? '').replace(/\s+$/, '');
+  return `${body}\n- [ ] ${task}\n`;
+}
+
+/** Markdown files from the synced repository: page buttons move between files, taps tick tasks. */
+export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
+  const files = useFiles(folder, '.md');
+  const [remembered, setRemembered] = useStoredState<string>('reader:path', '');
+  const path = files.includes(remembered) ? remembered : (files[files.length - 1] ?? null);
+  const text = useFile(path ?? '');
+  const sync = useSync();
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const at = path ? files.indexOf(path) : -1;
+  usePageButtons({
+    onLeft: () => { if (at > 0) setRemembered(files[at - 1]!); },
+    onRight: () => { if (at >= 0 && at < files.length - 1) setRemembered(files[at + 1]!); },
+  });
+
+  const toggle = useCallback((line: number) => {
+    if (path && text !== null) {
+      globalThis.__eink?.buzz();
+      writeFile(path, toggleTaskLine(text, line));
+    }
+  }, [path, text]);
+
+  const onKey = useCallback((key: string) => {
+    setDraft((d) => {
+      const cur = d ?? '';
+      if (key === 'ENTER') {
+        const task = cur.trim();
+        if (task && path) writeFile(path, appendTask(text, task));
+        return null;
+      }
+      if (key === 'BACKSPACE') return cur.slice(0, -1);
+      return cur + (key === ' ' ? ' ' : key.toLowerCase());
+    });
+  }, [path, text]);
+
+  const status = sync.state === 'error' ? `sync error: ${sync.error ?? ''}`
+    : sync.state === 'syncing' ? 'syncing…'
+      : sync.pending > 0 ? `${sync.pending} change${sync.pending === 1 ? '' : 's'} to push`
+        : path ? title(path) : folder;
+
+  return (
+    <eink-box bg={255} style={{ width: 1072, height: 1448, flex_direction: 'column', padding: [PAGE_PAD, PAGE_PAD, PAGE_PAD, PAGE_PAD] }}>
+      <StatusBar title={status} style={{ margin: [0, 0, 8, 0] }} />
+      <Column style={{ flex_grow: 1, flex_shrink: 1 }}>
+        {path === null
+          ? <Text font_size={32} color={90}>{`No markdown files under ${folder} yet.`}</Text>
+          : <Markdown text={text ?? ''} onToggleTask={toggle} />}
+      </Column>
+      {draft === null ? (
+        <Row style={{ justify_content: 'flex-end', margin: [12, 0, 0, 0] }}>
+          <Button label="+ task" font_size={28} onTap={() => setDraft('')} style={{ width: 180, height: 56 }} />
+        </Row>
+      ) : (
+        <Column style={{ gap: 10, margin: [12, 0, 0, 0] }}>
+          <eink-box border={2} style={{ padding: 12, height: 60 }}>
+            <eink-text text={draft === '' ? 'New task…' : draft} font_size={30} color={draft === '' ? 140 : 0} />
+          </eink-box>
+          <Keyboard onKey={onKey} />
+        </Column>
+      )}
+    </eink-box>
+  );
+}
+
+export default ReaderApp;

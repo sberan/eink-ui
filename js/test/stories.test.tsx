@@ -50,9 +50,9 @@ describe('story registry', () => {
     expect(clue?.name).toBe('Above a clue line');
   });
 
-  it('covers all nine components', () => {
+  it('covers every story group', () => {
     expect([...new Set(STORIES.map((s) => s.group))].sort()).toEqual(
-      ['Button', 'Checkbox', 'Column', 'Grid', 'Keyboard', 'Row', 'StatusBar', 'Text', 'View'],
+      ['Button', 'Checkbox', 'Column', 'Grid', 'Keyboard', 'Markdown', 'Reader', 'Row', 'StatusBar', 'Text', 'View'],
     );
   });
 });

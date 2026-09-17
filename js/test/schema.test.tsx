@@ -79,10 +79,12 @@ describe('entry-kindle boundary', () => {
     globalThis.__eink = undefined;
     globalThis.__eink_data = undefined;
     globalThis.__eink_app = undefined;
+    globalThis.__eink_app = undefined;
   });
 
   it('renders the injected list when it is valid', async () => {
     globalThis.__eink_data = GOOD;
+    globalThis.__eink_app = 'todo';
     await import('../entry-kindle.js');
     expect(h.textNodes()).toContain('x');
     expect(h.textNodes()).toContain('0/1 done');
@@ -92,6 +94,7 @@ describe('entry-kindle boundary', () => {
     const logSpy = vi.fn();
     h.host.log = logSpy;
     globalThis.__eink_data = { date: '2026-09-15', sections: [{ title: 'A', items: [{ id: 1 }] }] };
+    globalThis.__eink_app = 'todo';
     await import('../entry-kindle.js');
     expect(logged(logSpy).some((l) => l.includes('__eink_data rejected'))).toBe(true);
     expect(logged(logSpy).some((l) => l.startsWith('list loaded: date=2026-09-15 items=21'))).toBe(true);
@@ -102,6 +105,7 @@ describe('entry-kindle boundary', () => {
     const logSpy = vi.fn();
     h.host.log = logSpy;
     h.host.fetch = () => fetchResponse(200, []);
+    globalThis.__eink_app = 'todo';
     await import('../entry-kindle.js');
     await tick();
     expect(logged(logSpy).some((l) => l.includes('failed'))).toBe(true);
@@ -112,6 +116,7 @@ describe('entry-kindle boundary', () => {
     const logSpy = vi.fn();
     h.host.log = logSpy;
     h.host.fetch = () => { throw new Error('no network'); };
+    globalThis.__eink_app = 'todo';
     await import('../entry-kindle.js');
     await tick();
     expect(logged(logSpy).some((l) => l.includes('no network'))).toBe(true);
@@ -122,6 +127,7 @@ describe('entry-kindle boundary', () => {
     const logSpy = vi.fn();
     h.host.log = logSpy;
     globalThis.__eink_data = { ...GOOD, prev: '2026-09-14', next: '2026-09-16' };
+    globalThis.__eink_app = 'todo';
     await import('../entry-kindle.js');
     expect(logged(logSpy)).toContain(
       'list loaded: date=2026-09-15 items=1 prev=2026-09-14 next=2026-09-16',
@@ -157,6 +163,7 @@ describe('page-turn day switching', () => {
       return body === undefined ? fetchResponse(404, null) : fetchResponse(200, body);
     };
     globalThis.__eink_data = TUE;
+    globalThis.__eink_app = 'todo';
     await import('../entry-kindle.js');
     await tick();
   });
@@ -165,6 +172,7 @@ describe('page-turn day switching', () => {
     h.renderer.unmount();
     globalThis.__eink = undefined;
     globalThis.__eink_data = undefined;
+    globalThis.__eink_app = undefined;
   });
 
   it('goes forward to the next day and back again', async () => {

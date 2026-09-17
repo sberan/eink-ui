@@ -5,6 +5,8 @@ import React from 'react';
 import { registerKeys, render } from './renderer/index.js';
 import { TodoApp } from './apps/todo/index.js';
 import { CrosswordApp } from './apps/crossword/index.js';
+import { ReaderApp } from './apps/reader/index.js';
+import { listFiles } from './files/index.js';
 import { SAMPLE } from './apps/todo/sample.js';
 import { pageButton } from './device/index.js';
 import { installLocalStorage, readJson, writeJson } from './storage/index.js';
@@ -132,6 +134,13 @@ export function main(): void {
   installLocalStorage();
   if ((globalThis.__eink_app ?? 'todo') === 'crossword') {
     render(React.createElement(CrosswordApp));
+    return;
+  }
+  // a synced repository with day files takes over from the JSON todo list
+  const app = globalThis.__eink_app ?? (listFiles('days/', '.md').length > 0 ? 'reader' : 'todo');
+  if (app === 'reader') {
+    log(`reader: ${listFiles('days/', '.md').length} day files`);
+    render(React.createElement(ReaderApp));
     return;
   }
   registerKeys(onKey);

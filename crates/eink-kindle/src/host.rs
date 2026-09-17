@@ -3,6 +3,7 @@
 //! Static state = blocked on the input channel; JS only runs on events and timers.
 mod epdc;
 mod input;
+mod repo;
 
 use anyhow::{Context, Result};
 use eink_core::{Damage, Kind, Mode, Scene};
@@ -18,7 +19,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-const DIR: &str = "/mnt/us/todo-app";
+pub const DIR: &str = "/mnt/us/todo-app";
+
+/// Debug commands reach the repository worker through this.
+static REPO_CMD: std::sync::Mutex<Option<mpsc::Sender<repo::SyncCmd>>> = std::sync::Mutex::new(None);
 const WORK: &str = "/var/tmp/todo-app";
 const IDLE_AFTER: Duration = Duration::from_secs(180);
 const FRONTLIGHT: &str = "/sys/class/backlight/max77696-bl/brightness";
@@ -35,6 +39,10 @@ pub enum Event {
     Synced(Result<SyncOutcome, String>),
     /// An async fetch finished: promise id, then Ok(JSON {status, headers, body}) or Err(message).
     FetchDone(u32, Result<String, String>),
+    /// A repository pull changed these paths.
+    Files(Vec<String>),
+    /// The repository worker's state changed.
+    SyncState(repo::SyncState),
 }
 
 #[derive(Default, Debug)]
@@ -248,6 +256,14 @@ fn main() -> Result<()> {
 
     let ui_storage: Rc<RefCell<BTreeMap<String, String>>> = Rc::new(RefCell::new(load_storage()));
     let pending_fetch: Rc<RefCell<BTreeMap<u32, Settle>>> = Rc::new(RefCell::new(BTreeMap::new()));
+    repo::install_tools();
+    let (repo_cmd, repo_state) = repo::start(tx.clone());
+    if let Ok(mut g) = REPO_CMD.lock() {
+        *g = Some(repo_cmd.clone());
+    }
+    if repo::config().is_some() {
+        let _ = repo_cmd.send(repo::SyncCmd::Now(None));
+    }
     let rt = Runtime::new()?;
     rt.set_memory_limit(48 << 20);
     let ctx = JsContext::full(&rt)?;
@@ -367,6 +383,25 @@ fn main() -> Result<()> {
             let st = ui_storage.clone();
             eink.set("_storage_keys", Function::new(cx.clone(), move || serde_json::to_string(&st.borrow().keys().collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into()))?)?;
         }
+        eink.set("_read_file", Function::new(cx.clone(), |p: String| serde_json::to_string(&repo::read_file(&p)).unwrap_or_else(|_| "null".into()))?)?;
+        {
+            let cmd = repo_cmd.clone();
+            eink.set("write_file", Function::new(cx.clone(), move |p: String, text: String| {
+                match repo::write_file(&p, &text) {
+                    Ok(()) => { let _ = cmd.send(repo::SyncCmd::Commit(p)); }
+                    Err(e) => log(&format!("write_file {p}: {e:#}")),
+                }
+            })?)?;
+        }
+        eink.set("_list_files", Function::new(cx.clone(), |prefix: String| serde_json::to_string(&repo::list_files(&prefix)).unwrap_or_else(|_| "[]".into()))?)?;
+        {
+            let st = repo_state.clone();
+            eink.set("_sync_state", Function::new(cx.clone(), move || st.lock().map(|s| s.json()).unwrap_or_else(|_| "{}".into()))?)?;
+        }
+        {
+            let cmd = repo_cmd.clone();
+            eink.set("sync", Function::new(cx.clone(), move || { let _ = cmd.send(repo::SyncCmd::Now(None)); })?)?;
+        }
         g.set("__eink", eink)?;
         g.set("__eink_exit", Function::new(cx.clone(), exit_to_kindle)?)?;
 
@@ -416,6 +451,9 @@ fn main() -> Result<()> {
             };
             __eink.fetch = globalThis.fetch;
             __eink.battery = function () { return JSON.parse(__eink._battery()); };
+            __eink.read_file = function (p) { return JSON.parse(__eink._read_file(String(p))); };
+            __eink.list_files = function (prefix) { return JSON.parse(__eink._list_files(String(prefix || ""))); };
+            __eink.sync_state = function () { return JSON.parse(__eink._sync_state()); };
             __eink.storage_get = function (k) { return JSON.parse(__eink._storage_get(String(k))); };
             __eink.storage_keys = function () { return JSON.parse(__eink._storage_keys()); };
             globalThis.window = globalThis; globalThis.self = globalThis;
@@ -517,10 +555,35 @@ fn main() -> Result<()> {
                 if !out.changed.is_empty() {
                     log(&format!("store changed: {}", out.changed.join(", ")));
                 }
+                if out.changed.iter().any(|p| p.starts_with("bin/")) && repo::install_tools() {
+                    let _ = repo_cmd.send(repo::SyncCmd::Now(None));
+                }
                 if out.app_changed || out.host_changed {
                     restart_self("/var/tmp/eink-host-run");
                 }
                 None
+            }
+            Ok(Event::Files(changed)) => {
+                // a bundle or host committed to the repository wins over the store's copy
+                if changed.iter().any(|p| p == "bin/eink-host") {
+                    if let Ok(b) = fs::read(format!("{}/bin/eink-host", repo::REPO)) {
+                        let _ = fs::write(format!("{DIR}/eink-host"), &b);
+                        if install_host_binary(&b).is_ok() {
+                            restart_self("/var/tmp/eink-host-run");
+                        }
+                    }
+                }
+                if changed.iter().any(|p| p == "dist/app.js") {
+                    if let Ok(b) = fs::read(format!("{}/dist/app.js", repo::REPO)) {
+                        if fs::write(format!("{DIR}/app.js"), &b).is_ok() {
+                            restart_self("/var/tmp/eink-host-run");
+                        }
+                    }
+                }
+                Some(serde_json::json!({"type": "files", "changed": changed}).to_string())
+            }
+            Ok(Event::SyncState(state)) => {
+                Some(format!(r#"{{"type":"sync","sync":{}}}"#, state.json()))
             }
             Ok(Event::Synced(Err(e))) => {
                 log(&format!("periodic sync failed: {e}"));
@@ -573,9 +636,10 @@ fn main() -> Result<()> {
             std::thread::spawn(move || {
                 let _ = tx.send(Event::Synced(sync_files().map_err(|e| format!("{e:#}"))));
             });
+            let _ = repo_cmd.send(repo::SyncCmd::Now(None));
         }
         if !charging() && last_input.elapsed() >= IDLE_AFTER {
-            sleep_cycle(&rx);
+            sleep_cycle(&rx, &repo_cmd);
             last_input = Instant::now();
         }
         true
@@ -931,7 +995,30 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("could not write keys.conf: {e}"),
         },
         "url" => format!("update_url={}", update_url()),
-        "sync" => match sync_files() {
+        c if c.starts_with("repo ") => match repo::set_conf("repo_url", c[5..].trim()) {
+            Ok(()) => {
+                if let Ok(g) = REPO_CMD.lock() {
+                    if let Some(cmd) = g.as_ref() {
+                        let _ = cmd.send(repo::SyncCmd::Now(None));
+                    }
+                }
+                format!("repo_url={}", repo::config().map(|r| r.url).unwrap_or_default())
+            }
+            Err(e) => format!("could not write keys.conf: {e}"),
+        },
+        "repo" => format!("repo_url={} tools_ready={}", repo::config().map(|r| r.url).unwrap_or_else(|| "(none)".into()), repo::tools_ready()),
+        "sshkey" => match repo::public_key() {
+            Ok(k) => k,
+            Err(e) => format!("no key: {e:#}"),
+        },
+        "sync" => match {
+            if let Ok(g) = REPO_CMD.lock() {
+                if let Some(cmd) = g.as_ref() {
+                    let _ = cmd.send(repo::SyncCmd::Now(None));
+                }
+            }
+            sync_files()
+        } {
             Ok(out) => {
                 if out.app_changed || out.host_changed {
                     std::thread::spawn(|| {
@@ -945,7 +1032,7 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("sync failed: {e:#}"),
         },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey".into(),
     }
 }
 
@@ -975,7 +1062,7 @@ fn watch_powerd(tx: mpsc::Sender<Event>) {
 }
 
 /// Same policy as the todo app: radio off, frontlight off, RTC wake every 30 min, resume on power key.
-fn sleep_cycle(rx: &mpsc::Receiver<Event>) {
+fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd>) {
     log("idle on battery, sleeping");
     let light = fs::read_to_string(FRONTLIGHT).ok().map(|v| v.trim().to_string()).filter(|v| v != "0");
     let _ = fs::write(FRONTLIGHT, "0\n");
@@ -1006,8 +1093,13 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>) {
             Ok(_) => {}
             Err(e) => log(&format!("wake sync failed: {e:#}")),
         }
+        if repo::config().is_some() {
+            let (ack_tx, ack_rx) = mpsc::channel();
+            let _ = repo_cmd.send(repo::SyncCmd::Now(Some(ack_tx)));
+            let _ = ack_rx.recv_timeout(Duration::from_secs(40));
+        }
         if let Ok(ev) = rx.recv_timeout(Duration::from_secs(12)) {
-            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::Reload | Event::Synced(_) | Event::FetchDone(..)) {
+            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::Reload | Event::Synced(_) | Event::FetchDone(..) | Event::Files(_) | Event::SyncState(_)) {
                 break;
             }
         }

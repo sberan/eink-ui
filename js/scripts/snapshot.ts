@@ -7,6 +7,8 @@ import { render, unmount, handleEvent } from '../renderer/index.js';
 import { TodoApp } from '../apps/todo/index.js';
 import { SAMPLE } from '../apps/todo/sample.js';
 import { CrosswordApp } from '../apps/crossword/index.js';
+import { ReaderApp } from '../apps/reader/index.js';
+import { SAMPLE_FILES } from '../files/sample.js';
 
 const wasmBytes = readFileSync(process.argv[3] ?? new URL('../sim/pkg/eink_wasm.wasm', import.meta.url));
 const { instance } = await WebAssembly.instantiate(wasmBytes, {});
@@ -51,6 +53,11 @@ const api = {
   storage_set: () => {},
   storage_remove: () => {},
   storage_keys: () => [],
+  read_file: (p: string) => SAMPLE_FILES[p] ?? null,
+  write_file: () => {},
+  list_files: (prefix: string) => Object.keys(SAMPLE_FILES).filter((p) => p.startsWith(prefix)).sort(),
+  sync_state: () => ({ state: 'idle' as const, pending: 0, last_sync: null, error: null }),
+  sync: () => {},
 };
 (globalThis as any).__eink = api;
 (globalThis as any).setTimeout ??= setTimeout;
@@ -81,6 +88,11 @@ function save(name: string) {
 // ---- todo: always the bundled sample (the published image must never show a real list)
 render(createElement(TodoApp, { data: SAMPLE }));
 save('todo');
+unmount();
+
+// ---- reader: the newest day file from the sample repository
+render(createElement(ReaderApp));
+save('reader');
 unmount();
 
 // ---- crossword: select the first cell and type a word

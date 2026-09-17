@@ -8,8 +8,11 @@ import type {
 } from '../../host/eink.js';
 
 /** Knobs the simulator UI can turn; the app sees them through the host contract. */
+import { SAMPLE_FILES } from '../../files/sample.js';
+
 export const simDevice = { battery: { percent: 73, charging: false } };
 const STORAGE_PREFIX = 'eink:';
+const FILE_PREFIX = 'einkfs:';
 
 /** The C-ABI surface exported by crates/eink-wasm. */
 interface EinkWasmExports {
@@ -114,6 +117,12 @@ export async function loadEink(
     storage_set: (k, v) => localStorage.setItem(STORAGE_PREFIX + k, v),
     storage_remove: (k) => localStorage.removeItem(STORAGE_PREFIX + k),
     storage_keys: () => Object.keys(localStorage).filter((k) => k.startsWith(STORAGE_PREFIX)).map((k) => k.slice(STORAGE_PREFIX.length)),
+    // the browser's repository: the sample files, with edits kept in localStorage
+    read_file: (p) => localStorage.getItem(FILE_PREFIX + p) ?? SAMPLE_FILES[p] ?? null,
+    write_file: (p, t) => { localStorage.setItem(FILE_PREFIX + p, t); },
+    list_files: (prefix) => [...new Set([...Object.keys(SAMPLE_FILES), ...Object.keys(localStorage).filter((k) => k.startsWith(FILE_PREFIX)).map((k) => k.slice(FILE_PREFIX.length))])].filter((p) => p.startsWith(prefix)).sort(),
+    sync_state: () => ({ state: 'idle', pending: 0, last_sync: Date.now(), error: null }),
+    sync: () => {},
 
     emit(ev: EinkInputEvent): void { for (const cb of listeners.slice()) cb(ev); },
     /** Older name for `emit`, kept for sim/smoke.html. */

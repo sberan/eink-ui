@@ -242,11 +242,21 @@ export function batch(fn: () => void): void {
   reconciler.batchedUpdates(fn, undefined);
 }
 
-/** Dispatch a host input event. Exported for tests and for the simulator. */
+type HostEventListener = (ev: EinkInputEvent) => void;
+const hostListeners = new Set<HostEventListener>();
+
+/** Non-input host events (`files`, `sync`) go to every subscriber, e.g. the files module. */
+export function subscribeHostEvents(fn: HostEventListener): Unsubscribe {
+  hostListeners.add(fn);
+  return () => { hostListeners.delete(fn); };
+}
+
+/** Dispatch a host event. Exported for tests and for the simulator. */
 export function handleEvent(ev: EinkInputEvent): void {
   if (!ev) return;
   if (ev.type === 'tap') batch(() => dispatchTap(ev));
   else if (ev.type === 'key') batch(() => dispatchKey(ev.key));
+  else batch(() => { for (const l of hostListeners) l(ev); });
 }
 
 function dispatchTap(ev: { id: NodeId; x: number; y: number }): void {
