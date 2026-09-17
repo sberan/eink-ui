@@ -36,11 +36,46 @@ What you get on connect:
   | `:url https://host/dir/` | set the update URL (`:url` alone shows it) |
   | `:repo git@host:owner/repo.git` | set the git repository the app reads and writes (`:repo` alone shows it and whether git and dropbear are installed) |
   | `:sshkey` | the device's deploy key (generated on first use); add it to the repository with write access |
+  | `:sync` | pull the repository and the store now |
+  | `:tap x y`, `:key PageUp\|PageDown\|Power` | inject input, for scripted tests over the network |
+  | `:slow ms` | log every input event slower than `ms` (default 80; `:slow 1` logs them all) |
+  | `:log [n]` | the last `n` lines of host.log |
+  | `:conf key=value` | set a keys.conf entry (values are never echoed) |
+  | `:ls dir`, `:cat file`, `:strings file` | read-only looks at the device's filesystem |
+  | `:theme dark\|light`, `:light auto\|off\|n` | pixel inversion; frontlight (auto follows the ambient light sensor) |
 
   Without a laptop: press the power button five times within four seconds. The host buzzes once
   and restarts, which refetches `app.js`. (A long hold is not an option: the Kindle's own power
   manager reboots the device after a few seconds.) If the download fails the host runs the cached
   copy and shows the error badge.
+
+## Measuring responsiveness
+
+Every input event slower than the `:slow` threshold logs one line from the host and, when React's
+batch took 20 ms or more, one from the renderer:
+
+```
+slow tap: 58 ms (js 19 ms, blit 3 ms, epdc 36 ms, 1 rects)
+js: react: batch 56 ms = app handler 8 ms + react render/commit 3 ms + host commit 45 ms
+```
+
+- `js` is everything QuickJS did for the event minus the paint; `blit` copies damage rects into the
+  framebuffer; `epdc` is the panel update ioctl. `full flash` and `git busy` are appended when true.
+- `app handler` is the app's own `onTap`/`onKey` code, `react render/commit` is the reconciler, and
+  `host commit` is layout plus the paint (the host paints inside `__eink.commit()`, so the pixels
+  are on their way before the rest of the batch runs).
+- `commit: layout N ms` appears on its own when a layout pass took 10 ms or more, typically a page
+  turn onto a file the layout cache has not seen.
+
+Reference numbers on the Voyage: a task tick is about 28 ms end to end (handler ~9, React ~4,
+commit ~5), a page turn onto a new file ~60 ms. Two things made ticks slow before: re-rendering the
+whole app on every write (fixed by subscribing the page to its own file, see
+`js/apps/reader`), and CPU contention from a sync's TLS handshake, which stretched the ioctl from
+1 ms to 36 ms (fixed by running the UI thread at nice -5 and every worker at nice 10, `bg()` in
+`host.rs`).
+
+To measure from a laptop: `:slow 1`, then `:tap 60 380` on a task row, read the two lines, and
+`:slow 80` to restore the default.
 
 ## Wireless deploy loop
 
