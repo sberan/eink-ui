@@ -292,18 +292,18 @@ export function subscribeHostEvents(fn: HostEventListener): Unsubscribe {
 
 /** Dispatch a host event. Exported for tests and for the simulator. */
 /** Phase timings of the last input event, for the host's slow-event log. */
-const phase = { handler: 0, commit: 0, commits: 0 };
+const phase = { handler: 0, commit: 0, commits: 0, fn: 0 };
 
 export function handleEvent(ev: EinkInputEvent): void {
   if (!ev) return;
   if (ev.type === 'tap' || ev.type === 'key') {
     lastInputAt = Date.now();
-    phase.handler = 0; phase.commit = 0; phase.commits = 0;
+    phase.handler = 0; phase.commit = 0; phase.commits = 0; phase.fn = 0;
     const t0 = Date.now();
     if (ev.type === 'tap') batch(() => dispatchTap(ev));
     else batch(() => dispatchKey(ev.key));
     phase.handler = Date.now() - t0;
-    if (phase.handler >= 20) globalThis.__eink?.log(`react: handler ${phase.handler} ms (batch incl. render), ${phase.commits} host commit(s) ${phase.commit} ms`);
+    if (phase.handler >= 20) globalThis.__eink?.log(`react: batch ${phase.handler} ms = app handler ${phase.fn} ms + react render/commit ${phase.handler - phase.fn - phase.commit} ms + host commit ${phase.commit} ms`);
   } else {
     // the sleep notice must be on the panel before the host suspends: paint it like input
     if (ev.type === 'power') lastInputAt = Date.now();
@@ -323,7 +323,9 @@ function dispatchTap(ev: { id: NodeId; x: number; y: number; line?: number }): v
         ...(ev.line !== undefined ? { line: ev.line } : {}),
         stopPropagation() { stopped = true; },
       };
+      const t = Date.now();
       h(payload);
+      phase.fn += Date.now() - t;
       if (stopped) return;
     }
     inst = inst.parent;

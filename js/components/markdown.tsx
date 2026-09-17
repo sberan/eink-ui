@@ -98,9 +98,11 @@ export const Markdown = memo(function Markdown({
 }: MarkdownProps) {
   const tap = useCallback((p: TapPayload) => {
     if (p.line !== undefined && onToggleTask) {
-      const block = parseMarkdown(text).find((b) => b.kind === 'task' && b.line === p.line);
-      if (block && block.kind === 'task') {
-        onToggleTask(p.line, !block.checked);
+      // the host already found the task row; one line tells whether it was checked
+      const src = text.split('\n')[p.line] ?? '';
+      const m = /^\s*[-*+]\s+\[( |x|X)\]/.exec(src);
+      if (m) {
+        onToggleTask(p.line, m[1] === ' ');
         return;
       }
     }
