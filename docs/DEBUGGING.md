@@ -35,6 +35,7 @@ What you get on connect:
   | `:battery` | charge level and charger state |
   | `:url https://host/dir/` | set the update URL (`:url` alone shows it) |
   | `:repo git@host:owner/repo.git` | set the git repository the app reads and writes (`:repo` alone shows it and whether git and dropbear are installed) |
+  | `:ssh [refresh\|on\|off\|users a,b]` | SSH server status; refetch the GitHub keys; disable or enable; set the accounts |
   | `:sshkey` | the device's deploy key (generated on first use); add it to the repository with write access |
   | `:sync` | pull the repository and the store now |
   | `:tap x y`, `:key PageUp\|PageDown\|Power` | inject input, for scripted tests over the network |
@@ -48,6 +49,38 @@ What you get on connect:
   and restarts, which refetches `app.js`. (A long hold is not an option: the Kindle's own power
   manager reboots the device after a few seconds.) If the download fails the host runs the cached
   copy and shows the error badge.
+
+## SSH into the device
+
+The host also runs a small SSH server (dropbear, from the same `dropbearmulti` binary as the
+git transport), so the standard tools work over Wi-Fi with nothing custom in between:
+
+```sh
+ssh root@<kindle-ip>                        # busybox shell as root
+ssh root@<kindle-ip> tail -f /mnt/us/todo-app/host.log
+ssh root@<kindle-ip> top                    # the host, the sync worker, powerd
+scp app.js root@<kindle-ip>:/mnt/us/todo-app/
+ssh root@<kindle-ip> cat /dev/fb0 | magick -size 1088x1448 -depth 8 gray:- screen.png
+ssh -L 2323:localhost:2323 root@<kindle-ip> # the debug port through the tunnel
+```
+
+Logins are by key only; the build has no password authentication at all. The authorized keys
+are the ones GitHub publishes for an account at `https://github.com/<user>.keys`, so anyone who
+can push to the repository can also log in, and a key removed on GitHub stops working at the
+next refresh (at start and every 15 minutes while awake, or `:ssh refresh`). Every listed
+account must answer for the file to be rewritten, so a flaky network never revokes anything.
+
+keys.conf:
+
+| key | meaning |
+|---|---|
+| `ssh=off` | do not run the server (default: on) |
+| `ssh_users=alice,bob` | GitHub accounts whose keys may log in (default: the owner of `repo_url`) |
+
+The host key lives in `/var/local/eink-ui/ssh/`; `:ssh` prints its fingerprint for the first
+connection. The firewall rule for port 22 is added by the host. Keep in mind that the device
+trusts GitHub's key list: whoever can add a key to one of those accounts is root on the Kindle,
+on your Wi-Fi.
 
 ## Measuring responsiveness
 

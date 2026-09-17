@@ -77,7 +77,7 @@ fn keys_conf() -> String {
     fs::read_to_string(format!("{DIR}/keys.conf")).unwrap_or_default()
 }
 
-fn conf_value(key: &str) -> Option<String> {
+pub fn conf_value(key: &str) -> Option<String> {
     keys_conf().lines().find_map(|l| l.trim().strip_prefix(&format!("{key}=")).map(|v| v.trim().to_string())).filter(|v| !v.is_empty())
 }
 

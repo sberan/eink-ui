@@ -5,6 +5,7 @@ mod epdc;
 mod gh;
 mod input;
 mod repo;
+mod ssh;
 
 use anyhow::{Context, Result};
 use eink_core::{Damage, Kind, Mode, Scene};
@@ -30,6 +31,22 @@ static MAIN_TX: std::sync::Mutex<Option<mpsc::Sender<Event>>> = std::sync::Mutex
 static INVERT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Events slower than this many milliseconds are logged with a breakdown (`:slow <ms>`).
 static SLOW_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(80);
+
+/// The stock firewall drops inbound Wi-Fi connections; opens one TCP port, without duplicates.
+pub fn open_port(port: u16) {
+    let p = port.to_string();
+    let rule = ["INPUT", "-p", "tcp", "--dport", &p, "-j", "ACCEPT"];
+    let present = Command::new("iptables").arg("-C").args(rule).status().map_or(false, |s| s.success());
+    if !present {
+        let _ = Command::new("iptables").arg("-I").args(rule).status();
+    }
+}
+
+pub fn close_port(port: u16) {
+    let p = port.to_string();
+    let rule = ["INPUT", "-p", "tcp", "--dport", &p, "-j", "ACCEPT"];
+    while Command::new("iptables").arg("-D").args(rule).status().map_or(false, |s| s.success()) {}
+}
 
 /// Background work runs below the UI thread (nice 10 against its -5) so a sync, a download or a
 /// TLS handshake never steals the CPU from a tap on this single-core device.
@@ -400,8 +417,7 @@ fn main() -> Result<()> {
         lipc_set("com.lab126.deviced", prop, "1");
     }
     lipc_set("com.lab126.powerd", "preventScreenSaver", "1");
-    // the stock firewall drops inbound Wi-Fi connections: open the debug port
-    let _ = Command::new("iptables").args(["-I", "INPUT", "-p", "tcp", "--dport", "2323", "-j", "ACCEPT"]).status();
+    open_port(2323);
 
     let (tx, rx) = mpsc::channel::<Event>();
     let (bundle, fetch_error) = load_bundle(&tx)?;
@@ -427,6 +443,7 @@ fn main() -> Result<()> {
     let pending_fetch: Rc<RefCell<BTreeMap<u32, Settle>>> = Rc::new(RefCell::new(BTreeMap::new()));
     repo::install_tools();
     repo::remove_old_checkout();
+    ssh::start();
     let (repo_cmd, repo_state) = repo::start(tx.clone());
     if let Ok(mut g) = REPO_CMD.lock() {
         *g = Some(repo_cmd.clone());
@@ -1366,6 +1383,33 @@ fn debug_command(cmd: &str) -> String {
                 },
             }
         }
+        "ssh" => ssh::status(),
+        c if c.starts_with("ssh ") => match c[4..].trim() {
+            "refresh" => match ssh::ensure().and_then(|_| ssh::refresh()) {
+                Ok(s) => format!("ssh: {s}"),
+                Err(e) => format!("ssh: {e}"),
+            },
+            "off" => {
+                let _ = repo::set_conf("ssh", "off");
+                ssh::stop();
+                "ssh=off".into()
+            }
+            "on" => {
+                let _ = repo::set_conf("ssh", "on");
+                match ssh::ensure().and_then(|_| ssh::refresh()) {
+                    Ok(s) => format!("ssh: on, {s}"),
+                    Err(e) => format!("ssh: {e}"),
+                }
+            }
+            u if u.starts_with("users ") => {
+                let _ = repo::set_conf("ssh_users", u[6..].trim());
+                match ssh::refresh() {
+                    Ok(s) => format!("ssh: {s}"),
+                    Err(e) => format!("ssh: {e}"),
+                }
+            }
+            _ => "usage: :ssh [refresh|on|off|users a,b]".into(),
+        },
         "sshkey" => match repo::public_key() {
             Ok(k) => k,
             Err(e) => format!("no key: {e:#}"),
@@ -1391,7 +1435,7 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("sync failed: {e:#}"),
         },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :ssh [refresh|on|off|users a,b] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
     }
 }
 
