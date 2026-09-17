@@ -477,8 +477,13 @@ fn main() -> Result<()> {
             let sc = scene.clone();
             let fbc = fb.clone();
             eink.set("commit", Function::new(cx.clone(), move || {
+                let t = Instant::now();
                 let damage = sc.borrow_mut().commit();
+                let layout_ms = t.elapsed().as_millis();
                 paint(&mut fbc.borrow_mut(), &sc.borrow(), &damage);
+                if layout_ms >= 10 {
+                    log(&format!("commit: layout {layout_ms} ms, {} rects", damage.len()));
+                }
                 damage.len() as u32
             })?)?;
         }
@@ -495,14 +500,12 @@ fn main() -> Result<()> {
         }
         eink.set("clear_error", Function::new(cx.clone(), || clear_error())?)?;
         eink.set("buzz", Function::new(cx.clone(), || {
-            let t = Instant::now();
-            if let Err(e) = fs::write(HAPTIC, "1\n") {
-                log(&format!("haptic: {e}"));
-            }
-            let ms = t.elapsed().as_millis();
-            if ms >= 10 {
-                log(&format!("buzz: {ms} ms"));
-            }
+            // the haptics driver blocks for the pulse: never on the UI thread
+            std::thread::spawn(|| {
+                if let Err(e) = fs::write(HAPTIC, "1\n") {
+                    log(&format!("buzz failed: {e}"));
+                }
+            });
         })?)?;
         // fetch never blocks the UI: the request runs on a thread and the promise is settled
         // from the main loop when Event::FetchDone arrives (see the prelude for the Response shape).
@@ -556,15 +559,8 @@ fn main() -> Result<()> {
         {
             let cmd = repo_cmd.clone();
             eink.set("write_file", Function::new(cx.clone(), move |p: String, text: String| {
-                let t = Instant::now();
-                match repo::write_file(&p, &text) {
-                    Ok(()) => { let _ = cmd.send(repo::SyncCmd::Commit(p.clone())); }
-                    Err(e) => log(&format!("write_file {p}: {e:#}")),
-                }
-                let ms = t.elapsed().as_millis();
-                if ms >= 10 {
-                    log(&format!("write_file {p}: {ms} ms"));
-                }
+                // the app keeps the content it wrote; the FAT write and the commit happen off-thread
+                let _ = cmd.send(repo::SyncCmd::Write(p, text));
             })?)?;
         }
         eink.set("_list_files", Function::new(cx.clone(), |prefix: String| serde_json::to_string(&repo::list_files(&prefix)).unwrap_or_else(|_| "[]".into()))?)?;

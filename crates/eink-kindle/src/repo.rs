@@ -64,6 +64,8 @@ pub enum SyncCmd {
     Now(Option<mpsc::Sender<()>>),
     /// Commit one written file; a push follows after a short debounce.
     Commit(String),
+    /// Write a file the app just changed, then treat it as Commit.
+    Write(String, String),
 }
 
 pub struct Repo {
@@ -436,6 +438,14 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                     Err(_) => return,
                 },
             };
+            if let Some(SyncCmd::Write(path, text)) = &cmd {
+                if config().ok().flatten().is_none() {
+                    if let Err(e) = write_file(path, text) {
+                        log(&format!("write_file {path}: {e:#}"));
+                    }
+                    continue;
+                }
+            }
             let remote = match config() {
                 Ok(Some(r)) => r,
                 Ok(None) | Err(_) => {
@@ -459,6 +469,15 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                 Remote::Github(_) => dirty.len(),
             };
             match cmd {
+                Some(SyncCmd::Write(path, text)) => {
+                    match write_file(&path, &text) {
+                        Ok(()) => {
+                            dirty.insert(path);
+                            commit_due = Some(Instant::now() + COMMIT_QUIET);
+                        }
+                        Err(e) => log(&format!("write_file {path}: {e:#}")),
+                    }
+                }
                 Some(SyncCmd::Commit(path)) => {
                     // the file is already on disk; the network runs once the user pauses
                     dirty.insert(path);

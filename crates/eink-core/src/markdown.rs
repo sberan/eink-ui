@@ -3,6 +3,22 @@
 //! `js/components/markdown.tsx`; the JS side keeps the parser only for editing (which line a tap
 //! toggles is reported by the host as `line`).
 use crate::{raster::{self, Rect}, Paint, TextEngine};
+use std::{cell::RefCell, collections::HashMap};
+
+thread_local! {
+    /// The few most recent layouts: a commit lays a document out for measurement, damage and
+    /// paint, and a page turn brings back a document seen a moment ago.
+    static CACHE: RefCell<HashMap<u64, (Vec<Laid>, f32)>> = RefCell::new(HashMap::new());
+}
+
+fn key(text: &str, font: f32, width: f32) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in text.as_bytes().iter().chain(font.to_bits().to_le_bytes().iter()).chain(width.to_bits().to_le_bytes().iter()) {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockKind {
@@ -169,8 +185,24 @@ pub struct Laid {
     bold: bool,
 }
 
-/// Lays the blocks out for a width; returns them with the total height.
+/// Lays the blocks out for a width; returns them with the total height. Cached.
 pub fn layout(engine: &TextEngine, text: &str, font: f32, width: f32) -> (Vec<Laid>, f32) {
+    let k = key(text, font, width);
+    if let Some(hit) = CACHE.with(|c| c.borrow().get(&k).cloned()) {
+        return hit;
+    }
+    let out = layout_uncached(engine, text, font, width);
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 8 {
+            c.clear();
+        }
+        c.insert(k, out.clone());
+    });
+    out
+}
+
+fn layout_uncached(engine: &TextEngine, text: &str, font: f32, width: f32) -> (Vec<Laid>, f32) {
     let gap = (font * 0.4).round();
     let mut y = 0.0f32;
     let mut out = Vec::new();
