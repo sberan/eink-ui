@@ -62,8 +62,10 @@ export function listFiles(prefix: string, ext?: string): readonly string[] {
 
 /** Saves at once (the UI updates immediately); the host commits and pushes in the background. */
 export function writeFile(path: string, text: string): void {
+  // only a new file changes directory listings; keeping them lets useFiles callers skip a render
+  const isNew = (texts.get(path) ?? null) === null;
   texts.set(path, text);
-  lists.clear();
+  if (isNew) lists.clear();
   const h = host();
   if (typeof h?.write_file === 'function') h.write_file(path, text);
   notify();

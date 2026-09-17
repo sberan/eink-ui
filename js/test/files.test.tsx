@@ -70,6 +70,30 @@ describe('reader app over the mock repository', () => {
     expect(text.split('\n').length).toBe(SAMPLE_FILES[path]!.split('\n').length);
   });
 
+  it('a tap re-renders only the page node, not the whole app', async () => {
+    const { ReaderApp } = await import('../apps/reader/index.js');
+    h.renderer.render(<ReaderApp />);
+    await tick();
+    const eink = globalThis.__eink!;
+    const touched: number[] = [];
+    let listed = 0;
+    const origSet = eink.set_props.bind(eink);
+    const origList = eink.list_files.bind(eink);
+    eink.set_props = (id, json) => { touched.push(id); origSet(id, json); };
+    eink.list_files = (prefix) => { listed += 1; return origList(prefix); };
+    try {
+      h.tapTask('Post the return label');
+      await tick();
+    } finally {
+      eink.set_props = origSet;
+      eink.list_files = origList;
+    }
+    expect(touched).toHaveLength(1);
+    // the app's own hooks (file list, sync state) must not be re-read for an edit of an open file
+    expect(listed).toBe(0);
+    expect(h.host.writes).toHaveLength(1);
+  });
+
   it('page buttons move between day files', async () => {
     const { ReaderApp } = await import('../apps/reader/index.js');
     h.renderer.render(<ReaderApp />);

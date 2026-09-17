@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { Button, Column, Keyboard, Markdown, Row, StatusBar, Text, toggleTaskLine } from '../../components/index.js';
 import { usePageButtons } from '../../device/index.js';
-import { useFile, useFiles, useSync, writeFile } from '../../files/index.js';
+import { readFile, useFile, useFiles, useSync, writeFile } from '../../files/index.js';
 import { useStoredState } from '../../storage/index.js';
 
 const PAGE_PAD = 36;
@@ -20,12 +20,19 @@ function appendTask(text: string | null, task: string): string {
   return `${body}\n- [ ] ${task}\n`;
 }
 
+interface PageProps { path: string; onToggleTask: (line: number) => void }
+
+// The page subscribes to its own file so a tick re-renders this one node, not the whole app.
+function Page({ path, onToggleTask }: PageProps) {
+  const text = useFile(path);
+  return <Markdown text={text ?? ''} onToggleTask={onToggleTask} />;
+}
+
 /** Markdown files from the synced repository: page buttons move between files, taps tick tasks. */
 export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
   const files = useFiles(folder, '.md');
   const [remembered, setRemembered] = useStoredState<string>('reader:path', '');
   const path = files.includes(remembered) ? remembered : (files[files.length - 1] ?? null);
-  const text = useFile(path ?? '');
   const sync = useSync();
   const [draft, setDraft] = useState<string | null>(null);
 
@@ -36,25 +43,27 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
     onRight: () => { setDraft(null); if (at >= 0 && at < files.length - 1) setRemembered(files[at + 1]!); },
   });
 
+  // handlers read the file when called, so they stay stable across edits of it
   const toggle = useCallback((line: number) => {
+    const text = path ? readFile(path) : null;
     if (path && text !== null) {
       globalThis.__eink?.buzz();
       writeFile(path, toggleTaskLine(text, line));
     }
-  }, [path, text]);
+  }, [path]);
 
   const onKey = useCallback((key: string) => {
     setDraft((d) => {
       const cur = d ?? '';
       if (key === 'ENTER') {
         const task = cur.trim();
-        if (task && path) writeFile(path, appendTask(text, task));
+        if (task && path) writeFile(path, appendTask(readFile(path), task));
         return null;
       }
       if (key === 'BACKSPACE') return cur.slice(0, -1);
       return cur + (key === ' ' ? ' ' : key.toLowerCase());
     });
-  }, [path, text]);
+  }, [path]);
 
   // only states that last go in the status bar: a persistent error, else the file name (HIG rule 3)
   const status = sync.state === 'error' ? 'sync error' : path ? title(path) : folder;
@@ -67,7 +76,7 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
       <Column style={{ flex_grow: 1, flex_shrink: 1 }}>
         {path === null
           ? <Text font_size={32}>{`No markdown files under ${folder} yet.`}</Text>
-          : <Markdown text={text ?? ''} onToggleTask={toggle} />}
+          : <Page path={path} onToggleTask={toggle} />}
       </Column>
       {draft === null ? (
         <eink-box bg={255} style={{ position: 'absolute', right: PAGE_PAD, bottom: PAGE_PAD, padding: 6 }}>
