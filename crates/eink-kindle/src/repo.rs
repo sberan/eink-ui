@@ -20,7 +20,30 @@ pub const REPO_PARENT: &str = "/mnt/us/eink-ui";
 pub const TOOLS: &str = "/var/local/eink-ui/bin";
 const OLD_REPO: &str = "/var/local/eink-ui/repo";
 const KEY: &str = "/var/local/eink-ui/deploy_key";
-const PUSH_DEBOUNCE: Duration = Duration::from_secs(3);
+/// Writes are committed together after this much quiet, pushed after a longer one, and no git
+/// command runs within a few seconds of a tap: the UI and git share one core.
+const COMMIT_QUIET: Duration = Duration::from_secs(5);
+const PUSH_QUIET: Duration = Duration::from_secs(20);
+const INPUT_QUIET: Duration = Duration::from_secs(3);
+const INPUT_WAIT_CAP: Duration = Duration::from_secs(90);
+
+static LAST_INPUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn note_input() {
+    LAST_INPUT_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Blocks the worker until the user has left the device alone for a moment (bounded).
+fn wait_for_quiet() {
+    let started = Instant::now();
+    loop {
+        let since = now_ms().saturating_sub(LAST_INPUT_MS.load(std::sync::atomic::Ordering::Relaxed));
+        if since >= INPUT_QUIET.as_millis() as u64 || started.elapsed() >= INPUT_WAIT_CAP {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SyncState {
@@ -346,6 +369,13 @@ impl Repo {
     }
 }
 
+fn commit_message(paths: &std::collections::BTreeSet<String>) -> String {
+    match paths.len() {
+        1 => format!("kindle: {}", paths.iter().next().unwrap()),
+        n => format!("kindle: {n} files"),
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -363,9 +393,15 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
             let _ = tx.send(Event::SyncState(s));
         };
         let mut last_sync: Option<u64> = None;
+        let mut commit_due: Option<Instant> = None;
         let mut push_due: Option<Instant> = None;
+        let mut dirty: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         loop {
-            let cmd = match push_due {
+            let next_due = match (commit_due, push_due) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let cmd = match next_due {
                 Some(t) => match crx.recv_timeout(t.saturating_duration_since(Instant::now())) {
                     Ok(c) => Some(c),
                     Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -392,18 +428,21 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
             }
             match cmd {
                 Some(SyncCmd::Commit(path)) => {
-                    match repo.ensure_clone().and_then(|_| repo.commit(&path, &format!("kindle: {path}"))) {
-                        Ok(true) => {
-                            push_due = Some(Instant::now() + PUSH_DEBOUNCE);
-                            publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
-                        }
-                        Ok(false) => {}
-                        Err(e) => publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) }),
-                    }
+                    // the file is already on disk; git runs once the user pauses
+                    dirty.insert(path);
+                    commit_due = Some(Instant::now() + COMMIT_QUIET);
                 }
                 Some(SyncCmd::Now(ack)) => {
+                    if ack.is_none() {
+                        wait_for_quiet();
+                    }
                     publish(SyncState { state: "syncing", pending: repo.pending(), last_sync, error: None });
                     let result = repo.ensure_clone().and_then(|fresh| {
+                        if !dirty.is_empty() {
+                            let _ = repo.commit_all(&commit_message(&dirty));
+                            dirty.clear();
+                            commit_due = None;
+                        }
                         let changed = if fresh { list_files("") } else { repo.pull()? };
                         if repo.pending() > 0 {
                             repo.push()?;
@@ -430,16 +469,32 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                     }
                 }
                 None => {
-                    // debounce elapsed: push what accumulated
-                    push_due = None;
-                    match repo.push() {
-                        Ok(()) => {
-                            last_sync = Some(now_ms());
-                            publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
+                    let now = Instant::now();
+                    if commit_due.is_some_and(|t| t <= now) {
+                        commit_due = None;
+                        wait_for_quiet();
+                        match repo.ensure_clone().and_then(|_| repo.commit_all(&commit_message(&dirty))) {
+                            Ok(true) => {
+                                dirty.clear();
+                                push_due = Some(Instant::now() + PUSH_QUIET);
+                                publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
+                            }
+                            Ok(false) => dirty.clear(),
+                            Err(e) => publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) }),
                         }
-                        Err(e) => {
-                            log(&format!("repo: push failed: {e:#}"));
-                            publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) });
+                    }
+                    if push_due.is_some_and(|t| t <= Instant::now()) {
+                        push_due = None;
+                        wait_for_quiet();
+                        match repo.push() {
+                            Ok(()) => {
+                                last_sync = Some(now_ms());
+                                publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
+                            }
+                            Err(e) => {
+                                log(&format!("repo: push failed: {e:#}"));
+                                publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) });
+                            }
                         }
                     }
                 }

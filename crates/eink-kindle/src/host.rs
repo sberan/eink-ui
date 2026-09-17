@@ -144,9 +144,21 @@ fn detect_tz() -> Option<(String, &'static str)> {
             let (sign, rest) = off.split_at(1);
             let mut parts = rest.split(':');
             if let (Some(h), m) = (parts.next().and_then(|h| h.parse::<u32>().ok()), parts.next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0)) {
+                // the firmware records the standard offset only; assume the daylight rule of the
+                // region that offset belongs to (override with tz= in keys.conf when that is wrong)
+                let rule = match (sign, h, m) {
+                    ("-", 4, 0) => Some("AST4ADT,M3.2.0,M11.1.0"), ("-", 5, 0) => Some("EST5EDT,M3.2.0,M11.1.0"),
+                    ("-", 6, 0) => Some("CST6CDT,M3.2.0,M11.1.0"), ("-", 7, 0) => Some("MST7MDT,M3.2.0,M11.1.0"),
+                    ("-", 8, 0) => Some("PST8PDT,M3.2.0,M11.1.0"), ("-", 9, 0) => Some("AKST9AKDT,M3.2.0,M11.1.0"),
+                    ("+", 0, 0) | ("-", 0, 0) => Some("GMT0BST,M3.5.0/1,M10.5.0"), ("+", 1, 0) => Some("CET-1CEST,M3.5.0,M10.5.0/3"),
+                    ("+", 2, 0) => Some("EET-2EEST,M3.5.0/3,M10.5.0/4"), _ => None,
+                };
+                if let Some(rule) = rule {
+                    return Some((rule.to_string(), "tzVar offset, daylight rule assumed"));
+                }
                 let posix_sign = if sign == "-" { "" } else { "-" };
                 let tz = if m == 0 { format!("<{sign}{h:02}>{posix_sign}{h}") } else { format!("<{sign}{h:02}{m:02}>{posix_sign}{h}:{m:02}") };
-                return Some((tz, "tzVar"));
+                return Some((tz, "tzVar offset"));
             }
         }
     }
@@ -583,6 +595,7 @@ fn main() -> Result<()> {
         let payload = match ev {
             Ok(Event::Tap(x, y)) => {
                 last_input = Instant::now();
+                repo::note_input();
                 if last_tap.elapsed() < Duration::from_millis(250) {
                     return true;
                 }
@@ -593,6 +606,7 @@ fn main() -> Result<()> {
             }
             Ok(Event::Key(code)) => {
                 last_input = Instant::now();
+                repo::note_input();
                 let key = match code { 104 => "PageUp", 109 => "PageDown", 116 => "Power", _ => "Unknown" };
                 log(&format!("key {code} ({key})"));
                 Some(format!(r#"{{"type":"key","key":"{key}","code":{code}}}"#))
@@ -1193,6 +1207,21 @@ fn debug_command(cmd: &str) -> String {
             match fs::read(c[4..].trim()) {
                 Ok(b) => String::from_utf8_lossy(&b[..b.len().min(2000)]).replace('\n', " | "),
                 Err(e) => format!("cat: {e}"),
+            }
+        }
+        c if c.starts_with("strings ") => {
+            // :strings <file>   printable runs of 6+ bytes, first 3000 chars: what a binary file says
+            match fs::read(c[8..].trim()) {
+                Ok(b) => {
+                    let mut out = String::new();
+                    let mut run = String::new();
+                    for &byte in &b {
+                        if (0x20..0x7f).contains(&byte) { run.push(byte as char); } else { if run.len() >= 6 { out.push_str(&run); out.push(' '); } run.clear(); }
+                        if out.len() > 3000 { break; }
+                    }
+                    out
+                }
+                Err(e) => format!("strings: {e}"),
             }
         }
         "sshkey" => match repo::public_key() {
