@@ -41,6 +41,18 @@ Components (`js/components`): `View`, `Text`, `Button`, `Checkbox`, `Row`, `Colu
 Apps (`js/apps`): `todo` (loads the list via the host's `__eink.fetch`, validated by `schema.ts`),
 `crossword`. Stories (`js/stories`) feed the simulator's gallery.
 
+## The synced repository (`crates/eink-kindle/src/repo.rs`, `js/files`)
+
+Apps and their data live in a git repository. The host keeps a checkout under
+`/var/local/eink-ui/repo`, pulled by a worker thread at start, on every wake, every five minutes
+while awake and on demand; a `files` event names the paths a pull changed and the `js/files`
+module drops them from its cache so `useFile` and `useFiles` re-render. `writeFile` saves to
+disk at once, the worker commits it and pushes after a short debounce, and `useSync` shows the
+state. Transport is SSH through the bundled dropbear client with a deploy key made on the
+device; git is a static binary installed from the store. A conflicting pull keeps the remote
+version. `dist/app.js` or `bin/eink-host` committed to the repository replace the running ones.
+The reader app (`js/apps/reader`) is the first consumer: markdown days with tappable task lists.
+
 ## Responsiveness rules
 
 The main loop paints and handles input; it never waits on anything else. Network requests run
