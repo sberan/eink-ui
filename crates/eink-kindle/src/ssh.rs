@@ -61,14 +61,48 @@ fn home_from_passwd(passwd: &str) -> Option<String> {
     (!home.is_empty()).then(|| home.to_string())
 }
 
-fn pid() -> Option<i32> {
+fn server_args() -> Vec<String> {
+    ["dropbear", "-F", "-E", "-r", HOST_KEY, "-p", &PORT.to_string(), "-P", PIDFILE].iter().map(|s| s.to_string()).collect()
+}
+
+/// The running server's pid and whether it was started with the current arguments: a host
+/// restart leaves the previous server alive, possibly with an older configuration.
+fn server() -> Option<(i32, bool)> {
     let pid: i32 = fs::read_to_string(PIDFILE).ok()?.trim().parse().ok()?;
     let cmdline = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    String::from_utf8_lossy(&cmdline).contains("dropbear").then_some(pid)
+    let argv: Vec<String> = cmdline.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+    if !argv.iter().any(|a| a.contains("dropbear")) {
+        return None;
+    }
+    Some((pid, argv.len() > 1 && argv[1..] == server_args()[..]))
+}
+
+fn pid() -> Option<i32> {
+    server().map(|(p, _)| p)
 }
 
 pub fn running() -> bool {
     pid().is_some()
+}
+
+/// Ends a server started with other arguments and waits for it to go, so the port is free.
+fn retire_stale() {
+    if let Some((p, current)) = server() {
+        if current {
+            return;
+        }
+        log(&format!("ssh: server {p} runs with old arguments; restarting it"));
+        unsafe {
+            libc::kill(p, libc::SIGTERM);
+        }
+        for _ in 0..30 {
+            if !Path::new(&format!("/proc/{p}")).exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = fs::remove_file(PIDFILE);
+    }
 }
 
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
@@ -127,9 +161,7 @@ fn supervise(db: String) {
                 let _ = fs::remove_file(LOG);
             }
             let mut cmd = Command::new(&db);
-            cmd.args(["dropbear", "-F", "-E", "-r", HOST_KEY, "-p", &PORT.to_string(), "-P", PIDFILE])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null());
+            cmd.args(server_args()).stdin(Stdio::null()).stdout(Stdio::null());
             match fs::OpenOptions::new().create(true).append(true).open(LOG) {
                 Ok(f) => {
                     cmd.stderr(f);
@@ -178,6 +210,7 @@ pub fn ensure() -> Result<(), String> {
         }
     }
     crate::open_port(PORT);
+    retire_stale();
     if running() {
         return Ok(());
     }
