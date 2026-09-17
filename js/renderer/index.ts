@@ -295,6 +295,8 @@ export function handleEvent(ev: EinkInputEvent): void {
     if (ev.type === 'tap') batch(() => dispatchTap(ev));
     else batch(() => dispatchKey(ev.key));
   } else {
+    // the sleep notice must be on the panel before the host suspends: paint it like input
+    if (ev.type === 'power') lastInputAt = Date.now();
     batch(() => { for (const l of hostListeners) l(ev); });
   }
 }

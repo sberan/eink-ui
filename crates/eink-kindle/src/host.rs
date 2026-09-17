@@ -23,6 +23,10 @@ pub const DIR: &str = "/mnt/us/todo-app";
 
 /// Debug commands reach the repository worker through this.
 static REPO_CMD: std::sync::Mutex<Option<mpsc::Sender<repo::SyncCmd>>> = std::sync::Mutex::new(None);
+/// Debug commands inject synthetic input through this.
+static MAIN_TX: std::sync::Mutex<Option<mpsc::Sender<Event>>> = std::sync::Mutex::new(None);
+/// Events slower than this many milliseconds are logged with a breakdown (`:slow <ms>`).
+static SLOW_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(80);
 const WORK: &str = "/var/tmp/todo-app";
 const IDLE_AFTER: Duration = Duration::from_secs(180);
 const FRONTLIGHT: &str = "/sys/class/backlight/max77696-bl/brightness";
@@ -279,6 +283,9 @@ fn main() -> Result<()> {
     let (repo_cmd, repo_state) = repo::start(tx.clone());
     if let Ok(mut g) = REPO_CMD.lock() {
         *g = Some(repo_cmd.clone());
+    }
+    if let Ok(mut g) = MAIN_TX.lock() {
+        *g = Some(tx.clone());
     }
     if repo::config().is_some() {
         let _ = repo_cmd.send(repo::SyncCmd::Now(None));
@@ -652,7 +659,7 @@ fn main() -> Result<()> {
                 let _ = rt.execute_pending_job();
             }
             let total = started.elapsed().as_millis();
-            if total > 80 {
+            if total as u64 >= SLOW_MS.load(std::sync::atomic::Ordering::Relaxed) {
                 let (blit, epdc, rects, full) = take_paint_stats();
                 let kind: String = p.chars().skip(9).take_while(|c| *c != '"').collect();
                 let busy = repo_state.lock().map(|s| s.state == "syncing").unwrap_or(false);
@@ -1069,6 +1076,25 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("could not write keys.conf: {e}"),
         },
         "repo" => format!("repo_url={} tools_ready={}", repo::config().map(|r| r.url).unwrap_or_else(|| "(none)".into()), repo::tools_ready()),
+        c if c.starts_with("tap ") => {
+            let n: Vec<i32> = c[4..].split_whitespace().filter_map(|v| v.parse().ok()).collect();
+            match (n.first(), n.get(1), MAIN_TX.lock().ok().and_then(|g| g.clone())) {
+                (Some(&x), Some(&y), Some(tx)) => { let _ = tx.send(Event::Tap(x, y)); format!("tap {x} {y}") }
+                _ => "usage: :tap <x> <y>".into(),
+            }
+        }
+        c if c.starts_with("key ") => {
+            let code = match c[4..].trim() { "PageUp" | "left" | "prev" => 104, "PageDown" | "right" | "next" => 109, "Power" => 116, _ => 0 };
+            match (code, MAIN_TX.lock().ok().and_then(|g| g.clone())) {
+                (0, _) => "usage: :key PageUp|PageDown|Power".into(),
+                (code, Some(tx)) => { let _ = tx.send(Event::Key(code)); format!("key {code}") }
+                _ => "no main loop".into(),
+            }
+        }
+        c if c.starts_with("slow ") => match c[5..].trim().parse::<u64>() {
+            Ok(ms) => { SLOW_MS.store(ms, std::sync::atomic::Ordering::Relaxed); format!("logging events slower than {ms} ms") }
+            Err(_) => "usage: :slow <ms>".into(),
+        },
         "sshkey" => match repo::public_key() {
             Ok(k) => k,
             Err(e) => format!("no key: {e:#}"),
@@ -1094,7 +1120,7 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("sync failed: {e:#}"),
         },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms>".into(),
     }
 }
 
