@@ -34,6 +34,8 @@ What you get on connect:
   | `:exit` | hand the screen back to the stock Kindle UI |
   | `:battery` | charge level and charger state |
   | `:url https://host/dir/` | set the update URL (`:url` alone shows it) |
+  | `:repo git@host:owner/repo.git` | set the git repository the app reads and writes (`:repo` alone shows it and whether git and dropbear are installed) |
+  | `:sshkey` | the device's deploy key (generated on first use); add it to the repository with write access |
 
   Without a laptop: press the power button five times within four seconds. The host buzzes once
   and restarts, which refetches `app.js`. (A long hold is not an option: the Kindle's own power
@@ -65,6 +67,25 @@ served by any static HTTP server (no manifest needed) and use `kindle/push.sh`, 
 
 Over the debug port, `:sync` pulls the store now and reports what changed, `:url` shows or sets
 the store, `:reload` restarts (which syncs first), and `:update` fetches `eink-host` by name.
+
+## The synced repository
+
+Besides the store, the host can keep a git checkout under `/var/local/eink-ui/repo` and expose
+it to the app as files: `__eink.read_file`, `write_file`, `list_files`, `sync_state`, `sync`,
+with `files` and `sync` events when a pull lands. A write is committed at once and pushed a few
+seconds later; pulls happen at start, on every wake, every five minutes while awake, and on
+`:sync`. Transport is SSH through the bundled dropbear client with a deploy key made on the
+device. Setup, all wireless:
+
+1. Put `bin/git` and `bin/dropbearmulti` (built by `build.sh`, or from `third_party/`) into the
+   store; the host installs them into `/var/local/eink-ui/bin`.
+2. `:repo git@github.com:you/notes.git`, then `:sshkey`, and add that key to the repository as a
+   deploy key with write access.
+3. `:sync`. Markdown files under `days/` make the reader app take over from the JSON todo list.
+
+A conflict on pull (an agent changed the line you just ticked) keeps the remote version and
+drops the device's commit; the next tap redoes it. If `dist/app.js` or `bin/eink-host` is
+committed to the repository, it replaces the store's copy and restarts the host.
 
 ## The error badge
 

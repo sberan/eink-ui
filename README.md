@@ -87,6 +87,8 @@ corner and the reason in the log. Details in [docs/DEBUGGING.md](docs/DEBUGGING.
 | `js/components` | View, Row, Column, Text, Button, Checkbox, Grid, Keyboard, StatusBar. |
 | `js/device` | `useBattery`, `useClock`, `usePageButtons`: device state as hooks, with answers that work without a host. |
 | `js/storage` | Web-Storage-shaped persistent UI state (`useStoredState`, `installLocalStorage`): a JSON file on the device, localStorage in the browser. |
+| `js/files` | The git-synced repository as files: `useFile`, `useFiles`, `writeFile`, `useSync`. A write is a commit; a pull re-renders. |
+| `js/apps/reader` | Markdown files from the repository: page buttons move between days, a tap ticks a task, the keyboard adds one. |
 | `js/apps` | Todo list and crossword demos. |
 | `js/sim` | Browser simulator: component gallery, apps, e-ink refresh timing. |
 | `js/stories` | Component stories shown in the simulator's gallery. |
