@@ -11,7 +11,6 @@ export const States: Story = () => (
     <Checkbox checked={false} label="Unchecked, 30px box" />
     <Checkbox checked label="Checked, 30px box" />
     <Checkbox checked={false} label="Larger box and label" size={44} font_size={40} />
-    <Checkbox checked label="Dimmed label" color={140} />
   </Page>
 );
 
@@ -21,7 +20,7 @@ function InteractiveList() {
   const items = ['Charge the Voyage', 'Flash the new bundle', 'Check the ghosting counter'];
   return (
     <Column style={{ gap: 22 }}>
-      <Text font_size={28} color={90}>Tap a row: one checkbox repaints, nothing else.</Text>
+      <Text font_size={28}>Tap a row: one checkbox repaints, nothing else.</Text>
       {items.map((label, i) => (
         <Checkbox
           key={label}

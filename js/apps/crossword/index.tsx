@@ -5,7 +5,7 @@ import { SIZE, cellAt, clueFor, isBlack, numberGrid, type Direction } from './pu
 
 const CELL = 96;
 const PAD = 60;
-const SELECTED_BG = 220;
+const SELECTED_BG = 0;
 
 interface CellProps {
   r: number;
@@ -39,7 +39,7 @@ const Cell = memo(function Cell({ r, c, black, number, letter, selected, onSelec
         <eink-text
           text={String(number)}
           font_size={18}
-          color={40}
+          color={0}
           style={{ height: 22, margin: [2, 0, 0, 5] }}
         />
       )}
@@ -154,7 +154,7 @@ export function CrosswordApp() {
       />
       <eink-box style={{ flex_direction: 'column', margin: [0, 0, 0, PAD] }}>{rows}</eink-box>
       <eink-box style={{ flex_grow: 1 }} />
-      <eink-box bg={235} style={{ height: 76, justify_content: 'center', padding: [0, PAD, 0, PAD] }}>
+      <eink-box bg={255} border={2} style={{ height: 76, justify_content: 'center', padding: [0, PAD, 0, PAD] }}>
         <eink-text text={clueText} font_size={32} color={0} />
       </eink-box>
       <Keyboard onKey={onKey} style={{ height: KEYBOARD_HEIGHT }} />

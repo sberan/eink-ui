@@ -56,10 +56,8 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
     });
   }, [path, text]);
 
-  const status = sync.state === 'error' ? `sync error: ${sync.error ?? ''}`
-    : sync.state === 'syncing' ? 'syncing…'
-      : sync.pending > 0 ? `${sync.pending} change${sync.pending === 1 ? '' : 's'} to push`
-        : path ? title(path) : folder;
+  // only states that last go in the status bar: a persistent error, else the file name (HIG rule 3)
+  const status = sync.state === 'error' ? 'sync error' : path ? title(path) : folder;
 
   // The list can be taller than the panel, so the keyboard and the add button are overlays pinned
   // to the bottom edge rather than flow items after the list.
@@ -68,7 +66,7 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
       <StatusBar title={status} style={{ margin: [0, 0, 8, 0] }} />
       <Column style={{ flex_grow: 1, flex_shrink: 1 }}>
         {path === null
-          ? <Text font_size={32} color={90}>{`No markdown files under ${folder} yet.`}</Text>
+          ? <Text font_size={32}>{`No markdown files under ${folder} yet.`}</Text>
           : <Markdown text={text ?? ''} onToggleTask={toggle} />}
       </Column>
       {draft === null ? (
@@ -80,7 +78,7 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
           <eink-box bg={0} style={{ height: 2 }} />
           <Row style={{ gap: 10, align_items: 'center' }}>
             <eink-box border={2} style={{ padding: 12, height: 60, flex_grow: 1 }}>
-              <eink-text text={draft === '' ? 'New task…' : draft} font_size={30} color={draft === '' ? 140 : 0} />
+              <eink-text text={draft === '' ? 'New task…' : draft} font_size={30} />
             </eink-box>
             <Button label="×" font_size={28} onTap={() => setDraft(null)} style={{ width: 72, height: 60 }} />
           </Row>

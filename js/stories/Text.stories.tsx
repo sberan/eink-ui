@@ -11,8 +11,8 @@ export const Sizes: Story = () => (
     <Text font_size={52} bold>Noto Serif 52 bold</Text>
     <Text font_size={38}>Noto Serif 38 regular</Text>
     <Text font_size={32}>Noto Serif 32 regular</Text>
-    <Text font_size={28} color={90}>Noto Serif 28 at gray 90</Text>
-    <Text font_size={22} color={150}>Noto Serif 22 at gray 150</Text>
+    <Text font_size={28}>Noto Serif 28, the smallest body size</Text>
+    <Text font_size={24}>Noto Serif 24, the smallest caption size</Text>
   </Page>
 );
 

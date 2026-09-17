@@ -89,7 +89,7 @@ export const Button = memo(function Button({
         font_size={font_size}
         bold={bold}
         align="center"
-        color={disabled ? 150 : (pressed ? pressedColor : color)}
+        color={pressed ? pressedColor : color}
       />
     </eink-box>
   );
@@ -201,7 +201,7 @@ export const Keyboard = memo(function Keyboard({ onKey, style }: KeyboardProps) 
   const emit = useCallback<KeyHandler>((v) => { onKey?.(v); }, [onKey]);
   return (
     <eink-box
-      bg={245}
+      bg={255}
       style={{
         flex_direction: 'column', height: KEYBOARD_HEIGHT, padding: KB_PAD,
         gap: KEY_GAP, ...style,
@@ -263,7 +263,7 @@ function BatteryGlyph({ percent, charging, color }: { percent: number; charging:
 
 /** One thin row: title on the left, clock and battery on the right. Re-renders on the minute. */
 export const StatusBar = memo(function StatusBar({
-  title, battery, time, color = 90, font_size = 24, style, onTap,
+  title, battery, time, color = 0, font_size = 24, style, onTap,
 }: StatusBarProps) {
   const live = useBattery();
   const clock = useClock();
@@ -276,7 +276,7 @@ export const StatusBar = memo(function StatusBar({
       onTap={onTap}
       style={{ height: STATUS_BAR_HEIGHT, flex_direction: 'row', align_items: 'center', gap: 10, ...style }}
     >
-      <eink-text text={shown} font_size={font_size} color={power === 'sleep' ? 0 : color} bold={power === 'sleep'} style={{ flex_grow: 1 }} />
+      <eink-text text={shown} font_size={font_size} color={color} bold={power === 'sleep'} style={{ flex_grow: 1 }} />
       <eink-text text={formatClock(t)} font_size={font_size} color={color} />
       <BatteryGlyph percent={b.percent} charging={b.charging} color={color} />
       <eink-text text={`${Math.round(b.percent)}%`} font_size={font_size} color={color} />

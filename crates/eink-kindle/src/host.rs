@@ -672,6 +672,12 @@ fn main() -> Result<()> {
         }
         if !charging() && last_input.elapsed() >= IDLE_AFTER {
             deliver(&ctx, &rt, &listeners, &fb, r#"{"type":"power","state":"sleep"}"#);
+            // idle is the time to clear ghosting: nobody is waiting on this flash
+            if scene.borrow().partials_since_full() > 0 {
+                scene.borrow_mut().request_full();
+                let d = scene.borrow_mut().commit();
+                paint(&mut fb.borrow_mut(), &scene.borrow(), &d);
+            }
             sleep_cycle(&rx, &repo_cmd);
             deliver(&ctx, &rt, &listeners, &fb, r#"{"type":"power","state":"wake"}"#);
             last_input = Instant::now();

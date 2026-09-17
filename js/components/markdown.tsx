@@ -99,7 +99,7 @@ const Task = memo(function Task({ block, size, color, onToggle }: {
       checked={block.checked}
       label={block.text}
       font_size={size}
-      color={block.checked ? 120 : color}
+      color={color}
       onTap={onToggle ? tap : undefined}
       style={{ margin: [0, 0, 0, block.indent * 28] }}
     />
@@ -139,8 +139,8 @@ export const Markdown = memo(function Markdown({
           case 'quote':
             return (
               <eink-box key={b.line} style={{ flex_direction: 'row', gap: 16 }}>
-                <eink-box bg={140} style={{ width: 4 }} />
-                <eink-text text={b.text} font_size={font_size} color={110} style={{ flex_grow: 1, flex_shrink: 1 }} />
+                <eink-box bg={0} style={{ width: 4 }} />
+                <eink-text text={b.text} font_size={font_size} color={color} style={{ flex_grow: 1, flex_shrink: 1 }} />
               </eink-box>
             );
           case 'hr':

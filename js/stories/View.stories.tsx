@@ -22,7 +22,7 @@ const Swatch = ({ bg, label, border = 0 }: SwatchProps) => (
 export const Backgrounds: Story = () => (
   <Page>
     <Swatch bg={255} label="bg 255 (paper)" border={2} />
-    <Swatch bg={220} label="bg 220 (selection)" />
+    <Swatch bg={0} label="bg 0 (selection is inverted)" />
     <Swatch bg={150} label="bg 150" />
     <Swatch bg={60} label="bg 60" />
     <Swatch bg={0} label="bg 0 (ink)" />
@@ -45,12 +45,12 @@ export const Borders: Story = () => (
 
 export const PaddingAndGap: Story = () => (
   <Page>
-    <View bg={235} style={{ padding: 40, gap: 20 }}>
+    <View bg={255} border={2} style={{ padding: 40, gap: 20 }}>
       <View bg={0} style={{ height: 40 }} />
       <View bg={0} style={{ height: 40 }} />
       <View bg={0} style={{ height: 40 }} />
     </View>
-    <View bg={235} style={{ padding: [10, 80, 10, 80], gap: 6 }}>
+    <View bg={255} border={2} style={{ padding: [10, 80, 10, 80], gap: 6 }}>
       <View bg={0} style={{ height: 40 }} />
       <View bg={0} style={{ height: 40 }} />
     </View>

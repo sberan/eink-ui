@@ -48,7 +48,7 @@ const Item = memo(function Item({ item, onToggle }: { item: TodoItem; onToggle: 
       <eink-text
         text={item.text}
         font_size={ITEM_SIZE}
-        color={item.done ? 120 : 0}
+        color={0}
         style={{ flex_grow: 1 }}
       />
     </eink-box>
@@ -152,7 +152,7 @@ export function TodoApp({ data, api = '', onHeaderTap, onFooterTap }: TodoAppPro
       <StatusBar style={{ margin: [0, 0, 6, 0] }} />
       <eink-box onTap={onHeaderTap} style={{ flex_direction: 'column' }}>
         <eink-text text={head.day} font_size={HEADER_DAY} bold style={{ height: HEADER_DAY + 12 }} />
-        <eink-text text={head.date} font_size={HEADER_DATE} color={90} style={{ height: HEADER_DATE + 10 }} />
+        <eink-text text={head.date} font_size={HEADER_DATE} color={0} style={{ height: HEADER_DATE + 10 }} />
       </eink-box>
       <eink-box bg={0} style={{ height: 3, margin: [14, 0, 0, 0] }} />
       <eink-box style={{ flex_direction: 'column', flex_grow: 1 }}>
@@ -165,7 +165,7 @@ export function TodoApp({ data, api = '', onHeaderTap, onFooterTap }: TodoAppPro
         <eink-text
           text={`${done}/${total} done`}
           font_size={FOOTER_SIZE}
-          color={90}
+          color={0}
           align="right"
           style={{ height: FOOTER_SIZE + 8 }}
         />

@@ -40,7 +40,7 @@ function Selectable() {
   const pick = useCallback((i: number) => setSel(i), []);
   return (
     <>
-      <Text font_size={28} color={90}>Tap a cell: only two cells repaint.</Text>
+      <Text font_size={28}>Tap a cell: only two cells repaint.</Text>
       <Grid cols={6} rows={6} cell={96} gap={4}>
         {Array.from({ length: 36 }, (_, i) => (
           <eink-box

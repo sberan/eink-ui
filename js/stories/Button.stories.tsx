@@ -18,7 +18,7 @@ export const Default: Story = () => (
 /** Tap a button: the bg flips for 140 ms, which the panel shows as a DU partial. */
 export const PressedFeedback: Story = () => (
   <Page>
-    <Text font_size={28} color={90}>Tap a button to see the bg flip and the DU rect in the status line.</Text>
+    <Text font_size={28}>Tap a button to see the bg flip and the DU rect in the status line.</Text>
     <Row style={{ gap: 20, height: 110 }}>
       <Button label="140 ms" style={{ flex_grow: 1, height: 110 }} />
       <Button label="600 ms" flash={600} style={{ flex_grow: 1, height: 110 }} />

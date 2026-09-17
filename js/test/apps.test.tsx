@@ -42,11 +42,11 @@ describe('todo app', () => {
     h.calls.length = 0;
     h.mock.emit({ type: 'tap', id: target!.parent, x: 0, y: 0 });
     expect(h.textNodes()).toContain('6/21 done');
-    // the checkbox fill, the label colour and the footer text: nothing else
+    // the checkbox fill and the footer text: nothing else (done items keep black text, HIG rule 1)
     expect(h.propCalls().map(([, p]) => Object.keys(p).sort().join(','))).toEqual(
-      expect.arrayContaining(['bg', 'color', 'text']),
+      expect.arrayContaining(['bg', 'text']),
     );
-    expect(h.propCalls()).toHaveLength(3);
+    expect(h.propCalls()).toHaveLength(2);
   });
 
   it('calls __eink.fetch with method and body when the host provides it', async () => {

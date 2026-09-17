@@ -11,20 +11,20 @@ const at = new Date(Date.UTC(2026, 8, 17, 9, 41));
 export const States: Story = () => (
   <Page gap={40}>
     <Column style={{ gap: 6 }}>
-      <Text font_size={24} color={140}>Full, with a title</Text>
+      <Text font_size={24}>Full, with a title</Text>
       <StatusBar title="kindle-todo" battery={{ percent: 98, charging: false }} time={at} />
     </Column>
     <Column style={{ gap: 6 }}>
-      <Text font_size={24} color={140}>Low</Text>
+      <Text font_size={24}>Low</Text>
       <StatusBar battery={{ percent: 12, charging: false }} time={at} />
     </Column>
     <Column style={{ gap: 6 }}>
-      <Text font_size={24} color={140}>Charging</Text>
+      <Text font_size={24}>Charging</Text>
       <StatusBar battery={{ percent: 55, charging: true }} time={at} />
     </Column>
     <Column style={{ gap: 6 }}>
-      <Text font_size={24} color={140}>Black, larger</Text>
-      <StatusBar title="Sync 3 min ago" battery={{ percent: 80, charging: false }} time={at} color={0} font_size={30} />
+      <Text font_size={24}>Larger</Text>
+      <StatusBar title="A larger bar" battery={{ percent: 80, charging: false }} time={at} font_size={30} />
     </Column>
   </Page>
 );

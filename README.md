@@ -84,7 +84,7 @@ corner and the reason in the log. Details in [docs/DEBUGGING.md](docs/DEBUGGING.
 | `crates/eink-wasm` | C-ABI wasm exports of the core (no wasm-bindgen). |
 | `crates/eink-kindle` | `eink-host`: QuickJS runtime, `/dev/fb0` + EPDC driver, input, power policy. |
 | `js/renderer` | react-reconciler host config targeting the core's API. |
-| `js/components` | View, Row, Column, Text, Button, Checkbox, Grid, Keyboard, StatusBar. |
+| `js/components` | View, Row, Column, Text, Button, Checkbox, Grid, Keyboard, StatusBar, Markdown. All follow [docs/HIG.md](docs/HIG.md): black text, black or white fills, no transient text, no layout shifts. |
 | `js/device` | `useBattery`, `useClock`, `usePageButtons`: device state as hooks, with answers that work without a host. |
 | `js/storage` | Web-Storage-shaped persistent UI state (`useStoredState`, `installLocalStorage`): a JSON file on the device, localStorage in the browser. |
 | `js/files` | The git-synced repository as files: `useFile`, `useFiles`, `writeFile`, `useSync`. A write is a commit; a pull re-renders. |

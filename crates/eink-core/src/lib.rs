@@ -239,7 +239,7 @@ impl Scene {
             text: TextEngine::new(),
             full_requested: true,
             partials: 0,
-            full_every: 20,
+            full_every: 64,
             committed_once: false,
             pending_holes: Vec::new(),
         }
@@ -352,6 +352,11 @@ impl Scene {
         }
     }
 
+    /// Partial updates since the last full flash.
+    pub fn partials_since_full(&self) -> u32 {
+        self.partials
+    }
+
     pub fn request_full(&mut self) {
         self.full_requested = true;
     }
@@ -417,7 +422,18 @@ impl Scene {
             }
             n.last_rect = Some(*r);
         }
-        let full = self.full_requested || !self.committed_once || self.partials >= self.full_every;
+        // A full flash costs the user most of a second and inverts the whole panel, so it is
+        // never triggered by a small change: only by request, the first paint, a change covering
+        // most of the panel (a new page, where GC16 also looks better than DU), or a long run of
+        // partials. Hosts clear ghosting on their own schedule, when the device is idle.
+        damage.extend(changed);
+        damage = raster::coalesce(damage);
+        if damage.is_empty() && !self.full_requested && self.committed_once {
+            return Vec::new();
+        }
+        let area: i64 = damage.iter().map(|r| r.w as i64 * r.h as i64).sum();
+        let most_of_panel = area * 2 > (SCREEN_W as i64) * (SCREEN_H as i64);
+        let full = self.full_requested || !self.committed_once || most_of_panel || self.partials >= self.full_every;
         let mode = if full { Mode::Gc16 } else { Mode::Du };
         if full {
             self.full_requested = false;
@@ -425,11 +441,6 @@ impl Scene {
             self.committed_once = true;
             damage = vec![Rect::new(0, 0, SCREEN_W as i32, SCREEN_H as i32)];
         } else {
-            damage.extend(changed);
-            damage = raster::coalesce(damage);
-            if damage.is_empty() {
-                return Vec::new();
-            }
             self.partials += 1;
         }
         // repaint every damage rect from the root down (painter's order)

@@ -53,6 +53,12 @@ device; git is a static binary installed from the store. A conflicting pull keep
 version. `dist/app.js` or `bin/eink-host` committed to the repository replace the running ones.
 The reader app (`js/apps/reader`) is the first consumer: markdown days with tappable task lists.
 
+## Interface rules
+
+Everything drawn follows [HIG.md](HIG.md): black text on white, inversion or thick borders for
+state, no transient text, no layout shifts, no scrolling. `js/test/hig.test.ts` checks the colour
+rules mechanically.
+
 ## Responsiveness rules
 
 The main loop paints and handles input; it never waits on anything else. Network requests run

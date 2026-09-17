@@ -10,7 +10,7 @@ interface BandProps { h?: number; label: string; grow?: number }
 
 const Band = ({ h, label, grow }: BandProps) => (
   <eink-box
-    bg={230}
+    bg={255}
     border={2}
     border_color={0}
     style={{ height: h, flex_grow: grow, justify_content: 'center', padding: [0, 20, 0, 20] }}
