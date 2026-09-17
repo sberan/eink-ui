@@ -77,10 +77,13 @@ keys.conf:
 | `ssh=off` | do not run the server (default: on) |
 | `ssh_users=alice,bob` | GitHub accounts whose keys may log in (default: the owner of `repo_url`) |
 
-The host key lives in `/var/local/eink-ui/ssh/`; `:ssh` prints its fingerprint for the first
-connection. The firewall rule for port 22 is added by the host. Keep in mind that the device
-trusts GitHub's key list: whoever can add a key to one of those accounts is root on the Kindle,
-on your Wi-Fi.
+The host key and the fetched keys live in `/var/local/eink-ui/ssh/`; the keys are copied into
+root's own `~/.ssh` (a tmpfs path on the Kindle, recreated at every start) because dropbear
+checks the permissions of every directory above `authorized_keys` up to the home directory.
+`:ssh` prints the host key fingerprint for the first connection, and the last lines of the
+server's log (`/var/tmp/eink-dropbear.log`) when a login is refused. The firewall rule for
+port 22 is added by the host. Keep in mind that the device trusts GitHub's key list: whoever
+can add a key to one of those accounts is root on the Kindle, on your Wi-Fi.
 
 ## Measuring responsiveness
 

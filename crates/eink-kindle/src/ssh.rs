@@ -4,18 +4,26 @@
 //! the GitHub accounts (default: the owner of `repo_url`).
 use crate::repo::{self, TOOLS};
 use crate::{bg, log};
-use std::{fs, path::Path, process::Command, sync::Mutex, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    process::{Command, Stdio},
+    sync::{atomic::{AtomicBool, Ordering}, Mutex},
+    time::Duration,
+};
 
 pub const PORT: u16 = 22;
 pub const DIR: &str = "/var/local/eink-ui/ssh";
 const HOST_KEY: &str = "/var/local/eink-ui/ssh/host_ed25519";
 const KEYS: &str = "/var/local/eink-ui/ssh/authorized_keys";
 const PIDFILE: &str = "/var/tmp/eink-dropbear.pid";
+const LOG: &str = "/var/tmp/eink-dropbear.log";
 const REFRESH: Duration = Duration::from_secs(15 * 60);
 const RETRY: Duration = Duration::from_secs(30);
 
 /// The last logged outcome, shown by `:ssh` and used to keep retries quiet.
 static LAST: Mutex<String> = Mutex::new(String::new());
+static SUPERVISING: AtomicBool = AtomicBool::new(false);
 
 fn dropbear() -> String {
     format!("{TOOLS}/dropbearmulti")
@@ -42,6 +50,17 @@ fn github_owner(url: &str) -> Option<String> {
     (!owner.is_empty()).then(|| owner.to_string())
 }
 
+/// Root's home as dropbear will see it (`getpwnam`): `/tmp/root` on the Kindle.
+fn root_home() -> String {
+    fs::read_to_string("/etc/passwd").ok().and_then(|p| home_from_passwd(&p)).unwrap_or_else(|| "/root".into())
+}
+
+fn home_from_passwd(passwd: &str) -> Option<String> {
+    let line = passwd.lines().find(|l| l.starts_with("root:"))?;
+    let home = line.split(':').nth(5)?.trim();
+    (!home.is_empty()).then(|| home.to_string())
+}
+
 fn pid() -> Option<i32> {
     let pid: i32 = fs::read_to_string(PIDFILE).ok()?.trim().parse().ok()?;
     let cmdline = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
@@ -65,6 +84,74 @@ fn chmod(path: &str, mode: u32) {
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
 }
 
+fn group_or_world_writable(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).map(|m| m.permissions().mode() & 0o022 != 0).unwrap_or(false)
+}
+
+/// Copies the fetched keys into root's `~/.ssh`. dropbear checks the permissions of every
+/// directory above `authorized_keys` and only stops at the home directory, so a file under
+/// `/var/local` would fail on whatever the mount point or the launcher's umask allows; the home
+/// is a tmpfs path here, hence the copy at every start.
+fn install_keys() -> Result<(), String> {
+    let home = root_home();
+    if !Path::new(&home).exists() {
+        fs::create_dir_all(&home).map_err(|e| format!("{home}: {e}"))?;
+        chmod(&home, 0o700);
+    } else if group_or_world_writable(&home) {
+        chmod(&home, 0o755);
+    }
+    let dir = format!("{home}/.ssh");
+    fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
+    chmod(&dir, 0o700);
+    let live = format!("{dir}/authorized_keys");
+    let keys = fs::read_to_string(KEYS).unwrap_or_default();
+    if fs::read_to_string(&live).ok().as_deref() != Some(keys.as_str()) {
+        let tmp = format!("{live}.tmp");
+        fs::write(&tmp, &keys).map_err(|e| format!("{tmp}: {e}"))?;
+        chmod(&tmp, 0o600);
+        fs::rename(&tmp, &live).map_err(|e| format!("{live}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Runs the server in the foreground under a thread that logs its output and restarts it
+/// while SSH stays enabled.
+fn supervise(db: String) {
+    if SUPERVISING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    bg(move || {
+        loop {
+            if fs::metadata(LOG).map(|m| m.len() > 200_000).unwrap_or(false) {
+                let _ = fs::remove_file(LOG);
+            }
+            let mut cmd = Command::new(&db);
+            cmd.args(["dropbear", "-F", "-E", "-r", HOST_KEY, "-p", &PORT.to_string(), "-P", PIDFILE])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null());
+            match fs::OpenOptions::new().create(true).append(true).open(LOG) {
+                Ok(f) => {
+                    cmd.stderr(f);
+                }
+                Err(_) => {
+                    cmd.stderr(Stdio::null());
+                }
+            }
+            match cmd.status() {
+                Ok(st) => log(&format!("ssh: server exited ({st})")),
+                Err(e) => log(&format!("ssh: server did not start: {e}")),
+            }
+            let _ = fs::remove_file(PIDFILE);
+            if !enabled() {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+        SUPERVISING.store(false, Ordering::SeqCst);
+    });
+}
+
 /// Starts the server when it is not running; the host key is made on first use. Sessions get
 /// dropbear's fixed root PATH, so `scp` is linked once into the read-only rootfs.
 pub fn ensure() -> Result<(), String> {
@@ -81,6 +168,7 @@ pub fn ensure() -> Result<(), String> {
         fs::write(KEYS, "").map_err(|e| format!("{KEYS}: {e}"))?;
     }
     chmod(KEYS, 0o600);
+    install_keys()?;
     if !Path::new("/usr/bin/scp").exists() {
         let linked = run("/usr/sbin/mntroot", &["rw"])
             .and_then(|_| std::os::unix::fs::symlink(&db, "/usr/bin/scp").map_err(|e| format!("link scp: {e}")));
@@ -93,7 +181,7 @@ pub fn ensure() -> Result<(), String> {
     if running() {
         return Ok(());
     }
-    run(&db, &["dropbear", "-r", HOST_KEY, "-D", DIR, "-p", &PORT.to_string(), "-P", PIDFILE])?;
+    supervise(db);
     log(&format!("ssh: listening on :{PORT}"));
     Ok(())
 }
@@ -103,7 +191,6 @@ pub fn stop() {
         unsafe {
             libc::kill(p, libc::SIGTERM);
         }
-        let _ = fs::remove_file(PIDFILE);
         log("ssh: stopped");
     }
     crate::close_port(PORT);
@@ -115,9 +202,8 @@ fn looks_like_key(line: &str) -> bool {
         if (t.starts_with("ssh-") || t.starts_with("ecdsa-") || t.starts_with("sk-")) && b.len() > 16)
 }
 
-/// Rewrites authorized_keys from GitHub. Every account must answer, or the file is left as it
-/// is, so a flaky network never revokes anything; a key removed on GitHub is gone at the next
-/// refresh.
+/// Rewrites the keys from GitHub. Every account must answer, or the file is left as it is, so
+/// a flaky network never revokes anything; a key removed on GitHub is gone at the next refresh.
 pub fn refresh() -> Result<String, String> {
     let users = users();
     if users.is_empty() {
@@ -145,6 +231,7 @@ pub fn refresh() -> Result<String, String> {
         chmod(&tmp, 0o600);
         fs::rename(&tmp, KEYS).map_err(|e| format!("{KEYS}: {e}"))?;
     }
+    install_keys()?;
     let who = users.iter().map(|u| format!("github:{u}")).collect::<Vec<_>>().join(", ");
     Ok(format!("{n} key(s) from {who}{}", if changed { ", updated" } else { "" }))
 }
@@ -163,11 +250,17 @@ pub fn status() -> String {
     };
     let count = fs::read_to_string(KEYS).map(|s| s.lines().filter(|l| looks_like_key(l)).count()).unwrap_or(0);
     let last = LAST.lock().map(|g| g.clone()).unwrap_or_default();
+    let tail = fs::read_to_string(LOG)
+        .map(|s| s.lines().rev().take(2).map(str::to_string).collect::<Vec<_>>())
+        .unwrap_or_default();
     format!(
-        "ssh: {state}; {count} authorized key(s) for {}; host key {}; last: {}",
+        "ssh: {state}; {count} authorized key(s) for {} in {}/.ssh; scp {}; host key {}; last: {}; server log: {}",
         users().join(","),
+        root_home(),
+        if Path::new("/usr/bin/scp").exists() { "linked" } else { "missing" },
         fingerprint().unwrap_or_else(|| "?".into()),
         if last.is_empty() { "nothing yet" } else { &last },
+        if tail.is_empty() { "(empty)".to_string() } else { tail.join(" | ") },
     )
 }
 
@@ -228,5 +321,12 @@ mod tests {
         assert!(!looks_like_key("<html>not found</html>"));
         assert!(!looks_like_key("ssh-rsa"));
         assert!(!looks_like_key(""));
+    }
+
+    #[test]
+    fn root_home_comes_from_passwd() {
+        let passwd = "root:x:0:0:root:/tmp/root:/bin/sh\ndaemon:x:1:1:daemon:/usr/sbin:/bin/sh\n";
+        assert_eq!(home_from_passwd(passwd).as_deref(), Some("/tmp/root"));
+        assert_eq!(home_from_passwd("nobody:x:99:99:nobody:/tmp:/bin/sh\n"), None);
     }
 }
