@@ -67,8 +67,9 @@ js: react: batch 56 ms = app handler 8 ms + react render/commit 3 ms + host comm
 - `commit: layout N ms` appears on its own when a layout pass took 10 ms or more, typically a page
   turn onto a file the layout cache has not seen.
 
-Reference numbers on the Voyage: a task tick is about 28 ms end to end (handler ~9, React ~4,
-commit ~5), a page turn onto a new file ~60 ms. Two things made ticks slow before: re-rendering the
+Reference numbers on the Voyage: a task tick is 12-13 ms end to end (handler ~1, React ~4,
+commit ~5; the first one after a restart can take 60 ms while the sync worker is still busy), a
+page turn onto a new file ~60 ms. Two things made ticks slow before: re-rendering the
 whole app on every write (fixed by subscribing the page to its own file, see
 `js/apps/reader`), and CPU contention from a sync's TLS handshake, which stretched the ioctl from
 1 ms to 36 ms (fixed by running the UI thread at nice -5 and every worker at nice 10, `bg()` in
