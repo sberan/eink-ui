@@ -693,6 +693,11 @@ fn fetch_if_changed(url: &str, etag: Option<&str>) -> Result<Option<(Vec<u8>, Op
     }
 }
 
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(data))
+}
+
 fn install_host_binary(data: &[u8]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let tmp = "/var/tmp/eink-host-run.new";
@@ -714,6 +719,7 @@ fn sync_files() -> Result<SyncOutcome> {
         fs::read_to_string(&index_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let etag = fs::read_to_string(&etag_path).ok();
     let mut out = SyncOutcome::default();
+    let mut stale = false;
     let manifest_url = format!("{base}manifest.json");
     let fetched = match fetch_if_changed(&manifest_url, etag.as_deref()) {
         Ok(f) => f,
@@ -745,7 +751,13 @@ fn sync_files() -> Result<SyncOutcome> {
             continue;
         }
         let url = entry.get("url").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| format!("{base}{path}"));
-        let data = download(&url)?;
+        // the CDN can still serve the previous copy for a minute after a put: skip it, next sync retries
+        let data = download(&format!("{url}?t={}", now_secs()))?;
+        if !sha.is_empty() && sha256_hex(&data) != sha {
+            log(&format!("sync: {path} does not match its manifest hash yet, retrying later"));
+            stale = true;
+            continue;
+        }
         if let Some(dir) = std::path::Path::new(&local).parent() {
             fs::create_dir_all(dir)?;
         }
@@ -771,7 +783,7 @@ fn sync_files() -> Result<SyncOutcome> {
         }
     }
     fs::write(&index_path, serde_json::to_string(&index)?)?;
-    if let Some(t) = tag {
+    if let Some(t) = tag.filter(|_| !stale) {
         let _ = fs::write(&etag_path, t);
     }
     if !out.removed.is_empty() {
