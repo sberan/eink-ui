@@ -190,10 +190,38 @@ const hostConfig: Config = {
   unhideTextInstance: (inst) => eink().set_props(inst.id, JSON.stringify({ style: { display: 'flex' } })),
 
   resetAfterCommit() {
-    const damage = eink().commit();
-    globalThis.__eink_paint?.(damage);
+    // The panel cannot show two updates closer than one partial refresh, so commits that no one
+    // is waiting for (timers, sync and file events, late data) share one paint per frame window,
+    // while a tap or a key paints at once. See docs/HIG.md.
+    if (!painted || Date.now() - lastInputAt < INPUT_WINDOW_MS) {
+      cancelFrame();
+      flush();
+      return;
+    }
+    if (frameTimer === null) frameTimer = setTimeout(flush, frameMs);
   },
 };
+
+/** Window for coalescing non-input paints, about one DU refresh. */
+export let frameMs = 250;
+export function setFrameMs(ms: number): void { frameMs = ms; }
+
+/** React delivers an input's update after the event batch, so "input-driven" means recent input. */
+const INPUT_WINDOW_MS = 300;
+let lastInputAt = 0;
+let painted = false;
+let frameTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelFrame(): void {
+  if (frameTimer !== null) { clearTimeout(frameTimer); frameTimer = null; }
+}
+
+function flush(): void {
+  frameTimer = null;
+  painted = true;
+  const damage = eink().commit();
+  globalThis.__eink_paint?.(damage);
+}
 
 const reconciler = Reconciler(hostConfig);
 
@@ -232,7 +260,9 @@ export function render(element: ReactNode): EinkInstance {
 
 export function unmount(): void {
   if (!root) return;
+  cancelFrame();
   reconciler.updateContainer(null, root, null, null);
+  painted = false;
   if (unsubscribe) {
     unsubscribe();
     subscribedHost = null;
@@ -260,9 +290,13 @@ export function subscribeHostEvents(fn: HostEventListener): Unsubscribe {
 /** Dispatch a host event. Exported for tests and for the simulator. */
 export function handleEvent(ev: EinkInputEvent): void {
   if (!ev) return;
-  if (ev.type === 'tap') batch(() => dispatchTap(ev));
-  else if (ev.type === 'key') batch(() => dispatchKey(ev.key));
-  else batch(() => { for (const l of hostListeners) l(ev); });
+  if (ev.type === 'tap' || ev.type === 'key') {
+    lastInputAt = Date.now();
+    if (ev.type === 'tap') batch(() => dispatchTap(ev));
+    else batch(() => dispatchKey(ev.key));
+  } else {
+    batch(() => { for (const l of hostListeners) l(ev); });
+  }
 }
 
 function dispatchTap(ev: { id: NodeId; x: number; y: number }): void {

@@ -42,6 +42,9 @@ that can be checked mechanically.
 ## Do
 
 - Black text, white ground, 2 px borders, generous spacing.
+- Let the renderer pace you. Taps and keys paint at once; every other change (timers, sync,
+  late data) is throttled to one paint per frame window of about 250 ms, so three state changes
+  in a burst cost one repaint. Do not build your own timers to "batch" updates.
 - Change the smallest region you can. One checkbox tap should repaint that row only; the damage
   tracker reports how much was repainted and the simulator shows it.
 - Prefer geometry to glyphs for status: the battery is a box with a fill, not a symbol.
