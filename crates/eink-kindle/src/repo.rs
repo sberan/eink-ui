@@ -94,6 +94,25 @@ pub fn install_tools() -> bool {
     ready
 }
 
+/// Free space on the partition holding the checkout, in MiB.
+pub fn free_mib() -> u64 {
+    unsafe {
+        let mut st: libc::statvfs = std::mem::zeroed();
+        let path = std::ffi::CString::new(BASE).unwrap();
+        if libc::statvfs(path.as_ptr(), &mut st) != 0 {
+            return u64::MAX;
+        }
+        (st.f_bavail as u64 * st.f_frsize as u64) / (1024 * 1024)
+    }
+}
+
+const MIN_FREE_MIB: u64 = 8;
+
+fn looks_corrupt(e: &anyhow::Error) -> bool {
+    let t = format!("{e:#}");
+    t.contains("corrupt") || t.contains("unable to unpack") || t.contains("not a git repository") || t.contains("inflate") || t.contains("bad object")
+}
+
 pub fn tools_ready() -> bool {
     Path::new(&format!("{TOOLS}/git")).exists() && Path::new(&format!("{TOOLS}/dropbearmulti")).exists()
 }
@@ -199,10 +218,31 @@ impl Repo {
         format!("origin/{}", self.branch)
     }
 
+    /// Throws the checkout away and clones again: the cure for a truncated object after a full
+    /// disk or a suspend mid-write. Local commits are lost, they were checkbox flips.
+    fn reclone(&self) -> Result<()> {
+        log("repo: checkout is corrupt, cloning again");
+        let _ = fs::remove_dir_all(REPO);
+        self.ensure_clone().map(|_| ())
+    }
+
+    /// Keeps the checkout small: the device needs the current tree, not the history of 4 MB
+    /// binaries. Runs after a pull that changed something.
+    fn prune(&self) {
+        let _ = self.git(&["reflog", "expire", "--expire=now", "--all"]);
+        if let Err(e) = self.git(&["gc", "-q", "--prune=now"]) {
+            log(&format!("repo: gc failed: {e:#}"));
+        }
+    }
+
     /// Clones on first use; returns true when it did.
     fn ensure_clone(&self) -> Result<bool> {
         if Path::new(REPO).join(".git").exists() {
             return Ok(false);
+        }
+        let free = free_mib();
+        if free < MIN_FREE_MIB {
+            bail!("{free} MiB free on {BASE}, not cloning");
         }
         fs::create_dir_all(BASE)?;
         log(&format!("repo: cloning {}", self.url));
@@ -238,9 +278,26 @@ impl Repo {
     /// remote version and drops the local commits (they were single checkbox flips). Returns the
     /// paths that changed on disk.
     pub fn pull(&self) -> Result<Vec<String>> {
+        let free = free_mib();
+        if free < MIN_FREE_MIB {
+            bail!("{free} MiB free on {BASE}, not pulling");
+        }
         let _ = self.commit_all("kindle: autosave");
-        let before = self.git(&["rev-parse", "HEAD"])?;
-        self.git(&["fetch", "-q", "origin", &self.branch])?;
+        let before = match self.git(&["rev-parse", "HEAD"]) {
+            Ok(h) => h,
+            Err(e) if looks_corrupt(&e) => {
+                self.reclone()?;
+                return Ok(list_files(""));
+            }
+            Err(e) => return Err(e),
+        };
+        if let Err(e) = self.git(&["fetch", "-q", "origin", &self.branch]) {
+            if looks_corrupt(&e) {
+                self.reclone()?;
+                return Ok(list_files(""));
+            }
+            return Err(e);
+        }
         let remote = self.remote();
         if self.pending() > 0 {
             if let Err(e) = self.git(&["rebase", "-q", &remote]) {
@@ -255,7 +312,10 @@ impl Repo {
         if before == after {
             return Ok(Vec::new());
         }
-        Ok(self.git(&["diff", "--name-only", &before, &after])?.lines().map(str::to_string).filter(|s| !s.is_empty()).collect())
+        let changed: Vec<String> = self.git(&["diff", "--name-only", &before, &after])?.lines().map(str::to_string).filter(|s| !s.is_empty()).collect();
+        self.prune();
+        log(&format!("repo: {} MiB free after pull", free_mib()));
+        Ok(changed)
     }
 
     pub fn push(&self) -> Result<()> {
