@@ -219,7 +219,10 @@ function cancelFrame(): void {
 function flush(): void {
   frameTimer = null;
   painted = true;
+  const t0 = Date.now();
   const damage = eink().commit();
+  phase.commit += Date.now() - t0;
+  phase.commits += 1;
   globalThis.__eink_paint?.(damage);
 }
 
@@ -288,12 +291,19 @@ export function subscribeHostEvents(fn: HostEventListener): Unsubscribe {
 }
 
 /** Dispatch a host event. Exported for tests and for the simulator. */
+/** Phase timings of the last input event, for the host's slow-event log. */
+const phase = { handler: 0, commit: 0, commits: 0 };
+
 export function handleEvent(ev: EinkInputEvent): void {
   if (!ev) return;
   if (ev.type === 'tap' || ev.type === 'key') {
     lastInputAt = Date.now();
+    phase.handler = 0; phase.commit = 0; phase.commits = 0;
+    const t0 = Date.now();
     if (ev.type === 'tap') batch(() => dispatchTap(ev));
     else batch(() => dispatchKey(ev.key));
+    phase.handler = Date.now() - t0;
+    if (phase.handler >= 20) globalThis.__eink?.log(`react: handler ${phase.handler} ms (batch incl. render), ${phase.commits} host commit(s) ${phase.commit} ms`);
   } else {
     // the sleep notice must be on the panel before the host suspends: paint it like input
     if (ev.type === 'power') lastInputAt = Date.now();

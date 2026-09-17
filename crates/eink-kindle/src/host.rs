@@ -426,6 +426,9 @@ fn main() -> Result<()> {
     }
     let rt = Runtime::new()?;
     rt.set_memory_limit(48 << 20);
+    // QuickJS collects whenever allocations since the last cycle pass this; the default is small
+    // enough to run a collection over React's whole fiber tree on most taps
+    rt.set_gc_threshold(12 << 20);
     let ctx = JsContext::full(&rt)?;
     let listeners: Rc<RefCell<Vec<rquickjs::Persistent<Function<'static>>>>> = Rc::new(RefCell::new(Vec::new()));
     let timer_store: Rc<RefCell<BTreeMap<(Instant, u32), rquickjs::Persistent<Function<'static>>>>> = Rc::new(RefCell::new(BTreeMap::new()));
