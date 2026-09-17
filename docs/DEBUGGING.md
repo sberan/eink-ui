@@ -70,12 +70,22 @@ the store, `:reload` restarts (which syncs first), and `:update` fetches `eink-h
 
 ## The synced repository
 
-Besides the store, the host can keep a git checkout under `/var/local/eink-ui/repo` and expose
-it to the app as files: `__eink.read_file`, `write_file`, `list_files`, `sync_state`, `sync`,
+Besides the store, the host can keep a checkout of a repository under `/mnt/us/eink-ui/repo` and
+expose it to the app as files. Two transports, chosen by `repo_url` in `keys.conf`:
+
+- **GitHub over HTTPS** (`repo_url=https://github.com/owner/repo` plus `github_token=`, a
+  fine-grained token with contents read and write on that one repository). The device never runs
+  git: a pull is one ETag-guarded request while nothing changed, then a tree listing and a
+  download per changed file; a write is one `PUT` that GitHub records as a commit. Light on the
+  CPU and the battery, and the default.
+- **Any git remote over SSH** (`repo_url=git@host:owner/repo.git`), through the bundled static
+  git and dropbear client with a deploy key made on the device (`:sshkey`). For hosts that are
+  not GitHub, such as a bare repository on your own machine.
+
+The app sees the same files either way: `__eink.read_file`, `write_file`, `list_files`, `sync_state`, `sync`,
 with `files` and `sync` events when a pull lands. A write is committed at once and pushed a few
 seconds later; pulls happen at start, on every wake, every five minutes while awake, and on
-`:sync`. Transport is SSH through the bundled dropbear client with a deploy key made on the
-device. Setup, all wireless:
+`:sync`. Setup for the SSH transport, all wireless:
 
 1. Put `bin/git` and `bin/dropbearmulti` (built by `build.sh`, or from `third_party/`) into the
    store; the host installs them into `/var/local/eink-ui/bin`.

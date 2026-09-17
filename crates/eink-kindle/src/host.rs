@@ -2,6 +2,7 @@
 //! FBInk region updates, feeds touch/PagePress input, and applies the todo app's power policy.
 //! Static state = blocked on the input channel; JS only runs on events and timers.
 mod epdc;
+mod gh;
 mod input;
 mod repo;
 
@@ -366,7 +367,7 @@ fn main() -> Result<()> {
     if let Ok(mut g) = MAIN_TX.lock() {
         *g = Some(tx.clone());
     }
-    if repo::config().is_some() {
+    if repo::configured() {
         let _ = repo_cmd.send(repo::SyncCmd::Now(None));
     }
     let rt = Runtime::new()?;
@@ -1166,11 +1167,11 @@ fn debug_command(cmd: &str) -> String {
                         let _ = cmd.send(repo::SyncCmd::Now(None));
                     }
                 }
-                format!("repo_url={}", repo::config().map(|r| r.url).unwrap_or_default())
+                format!("repo_url={}", repo::repo_url().unwrap_or_default())
             }
             Err(e) => format!("could not write keys.conf: {e}"),
         },
-        "repo" => format!("repo_url={} tools_ready={} checkout={} free={} MiB (tools partition {} MiB)", repo::config().map(|r| r.url).unwrap_or_else(|| "(none)".into()), repo::tools_ready(), repo::REPO, repo::free_mib(), repo::free_mib_at(repo::BASE)),
+        "repo" => format!("repo_url={} backend={} tools_ready={} checkout={} free={} MiB (tools partition {} MiB)", repo::repo_url().unwrap_or_else(|| "(none)".into()), match repo::config() { Ok(Some(repo::Remote::Github(_))) => "github-https", Ok(Some(repo::Remote::Git(_))) => "git-ssh", Ok(None) => "none", Err(_) => "misconfigured" }, repo::tools_ready(), repo::REPO, repo::free_mib(), repo::free_mib_at(repo::BASE)),
         c if c.starts_with("tap ") => {
             let n: Vec<i32> = c[4..].split_whitespace().filter_map(|v| v.parse().ok()).collect();
             match (n.first(), n.get(1), MAIN_TX.lock().ok().and_then(|g| g.clone())) {
@@ -1348,7 +1349,7 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd
             Ok(_) => {}
             Err(e) => log(&format!("wake sync failed: {e:#}")),
         }
-        if repo::config().is_some() {
+        if repo::configured() {
             let (ack_tx, ack_rx) = mpsc::channel();
             let _ = repo_cmd.send(repo::SyncCmd::Now(Some(ack_tx)));
             let _ = ack_rx.recv_timeout(Duration::from_secs(40));

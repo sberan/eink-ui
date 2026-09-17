@@ -2,7 +2,7 @@
 //! worker thread so the UI never waits on the network. The app reads and writes files through
 //! `__eink.read_file` / `write_file`; a write is committed at once and pushed a few seconds later.
 //! Transport is SSH through dropbear's client with a deploy key generated on the device.
-use crate::{log, Event, DIR};
+use crate::{gh::{self, Github}, log, Event, DIR};
 use anyhow::{bail, Context, Result};
 use std::{
     fs,
@@ -79,9 +79,30 @@ fn conf_value(key: &str) -> Option<String> {
     keys_conf().lines().find_map(|l| l.trim().strip_prefix(&format!("{key}=")).map(|v| v.trim().to_string())).filter(|v| !v.is_empty())
 }
 
-/// `repo_url=git@github.com:owner/repo.git` (and optional `repo_branch=`) in keys.conf.
-pub fn config() -> Option<Repo> {
-    Some(Repo { url: conf_value("repo_url")?, branch: conf_value("repo_branch").unwrap_or_else(|| "main".into()) })
+/// Where the files come from: GitHub over HTTPS (`repo_url=https://github.com/owner/repo` plus
+/// `github_token=`), or any git remote over SSH through the bundled git (`repo_url=git@...`).
+pub enum Remote {
+    Git(Repo),
+    Github(Github),
+}
+
+pub fn repo_url() -> Option<String> {
+    conf_value("repo_url")
+}
+
+pub fn configured() -> bool {
+    repo_url().is_some()
+}
+
+/// `Ok(None)` when no repository is configured; `Err` names what is missing.
+pub fn config() -> Result<Option<Remote>, String> {
+    let Some(url) = conf_value("repo_url") else { return Ok(None) };
+    let branch = conf_value("repo_branch").unwrap_or_else(|| "main".into());
+    if let Some((owner, repo)) = gh::parse(&url) {
+        let token = conf_value("github_token").ok_or_else(|| "github_token missing in keys.conf (a fine-grained token with contents read/write on that repo)".to_string())?;
+        return Ok(Some(Remote::Github(Github::new(owner, repo, branch, token))));
+    }
+    Ok(Some(Remote::Git(Repo { url, branch })))
 }
 
 /// Rewrites keys.conf with a new value for `key`, keeping every other line.
@@ -210,7 +231,10 @@ pub fn list_files(prefix: &str) -> Vec<String> {
             if p.is_dir() {
                 walk(&p, root, out);
             } else if let Ok(rel) = p.strip_prefix(root) {
-                out.push(rel.to_string_lossy().replace('\\', "/"));
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if !rel.starts_with(".eink-") && !rel.ends_with(".part") {
+                    out.push(rel);
+                }
             }
         }
     }
@@ -412,23 +436,31 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                     Err(_) => return,
                 },
             };
-            let Some(repo) = config() else {
-                publish(SyncState { state: "offline", pending: 0, last_sync, error: Some("no repo_url in keys.conf".into()) });
-                if let Some(SyncCmd::Now(Some(ack))) = cmd {
-                    let _ = ack.send(());
+            let remote = match config() {
+                Ok(Some(r)) => r,
+                Ok(None) | Err(_) => {
+                    let why = match config() { Err(e) => e, _ => "no repo_url in keys.conf".into() };
+                    publish(SyncState { state: "offline", pending: 0, last_sync, error: Some(why) });
+                    if let Some(SyncCmd::Now(Some(ack))) = cmd {
+                        let _ = ack.send(());
+                    }
+                    continue;
                 }
-                continue;
             };
-            if !tools_ready() {
+            if matches!(remote, Remote::Git(_)) && !tools_ready() {
                 publish(SyncState { state: "offline", pending: 0, last_sync, error: Some("git or dropbear missing".into()) });
                 if let Some(SyncCmd::Now(Some(ack))) = cmd {
                     let _ = ack.send(());
                 }
                 continue;
             }
+            let pending = |dirty: &std::collections::BTreeSet<String>| match &remote {
+                Remote::Git(repo) => repo.pending(),
+                Remote::Github(_) => dirty.len(),
+            };
             match cmd {
                 Some(SyncCmd::Commit(path)) => {
-                    // the file is already on disk; git runs once the user pauses
+                    // the file is already on disk; the network runs once the user pauses
                     dirty.insert(path);
                     commit_due = Some(Instant::now() + COMMIT_QUIET);
                 }
@@ -436,19 +468,29 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                     if ack.is_none() {
                         wait_for_quiet();
                     }
-                    publish(SyncState { state: "syncing", pending: repo.pending(), last_sync, error: None });
-                    let result = repo.ensure_clone().and_then(|fresh| {
-                        if !dirty.is_empty() {
-                            let _ = repo.commit_all(&commit_message(&dirty));
-                            dirty.clear();
+                    publish(SyncState { state: "syncing", pending: pending(&dirty), last_sync, error: None });
+                    let result: Result<Vec<String>> = match &remote {
+                        Remote::Git(repo) => repo.ensure_clone().and_then(|fresh| {
+                            if !dirty.is_empty() {
+                                let _ = repo.commit_all(&commit_message(&dirty));
+                                dirty.clear();
+                                commit_due = None;
+                            }
+                            let changed = if fresh { list_files("") } else { repo.pull()? };
+                            if repo.pending() > 0 {
+                                repo.push()?;
+                            }
+                            Ok(changed)
+                        }),
+                        Remote::Github(gh) => gh.pull().and_then(|changed| {
+                            for path in dirty.clone() {
+                                gh.put(&path, &format!("kindle: {path}"))?;
+                                dirty.remove(&path);
+                            }
                             commit_due = None;
-                        }
-                        let changed = if fresh { list_files("") } else { repo.pull()? };
-                        if repo.pending() > 0 {
-                            repo.push()?;
-                        }
-                        Ok(changed)
-                    });
+                            Ok(changed)
+                        }),
+                    };
                     match result {
                         Ok(changed) => {
                             last_sync = Some(now_ms());
@@ -457,11 +499,11 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                                 log(&format!("repo: {} file(s) changed", changed.len()));
                                 let _ = tx.send(Event::Files(changed));
                             }
-                            publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
+                            publish(SyncState { state: "idle", pending: pending(&dirty), last_sync, error: None });
                         }
                         Err(e) => {
                             log(&format!("repo: sync failed: {e:#}"));
-                            publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) });
+                            publish(SyncState { state: "error", pending: pending(&dirty), last_sync, error: Some(format!("{e:#}")) });
                         }
                     }
                     if let Some(ack) = ack {
@@ -473,27 +515,52 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                     if commit_due.is_some_and(|t| t <= now) {
                         commit_due = None;
                         wait_for_quiet();
-                        match repo.ensure_clone().and_then(|_| repo.commit_all(&commit_message(&dirty))) {
-                            Ok(true) => {
-                                dirty.clear();
-                                push_due = Some(Instant::now() + PUSH_QUIET);
-                                publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
+                        match &remote {
+                            Remote::Git(repo) => match repo.ensure_clone().and_then(|_| repo.commit_all(&commit_message(&dirty))) {
+                                Ok(true) => {
+                                    dirty.clear();
+                                    push_due = Some(Instant::now() + PUSH_QUIET);
+                                    publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
+                                }
+                                Ok(false) => dirty.clear(),
+                                Err(e) => publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) }),
+                            },
+                            Remote::Github(gh) => {
+                                // each put is a commit on GitHub already: nothing left to push
+                                let mut failed = None;
+                                for path in dirty.clone() {
+                                    match gh.put(&path, &format!("kindle: {path}")) {
+                                        Ok(()) => { dirty.remove(&path); }
+                                        Err(e) => { failed = Some(format!("{e:#}")); break; }
+                                    }
+                                }
+                                match failed {
+                                    None => {
+                                        last_sync = Some(now_ms());
+                                        publish(SyncState { state: "idle", pending: dirty.len(), last_sync, error: None });
+                                    }
+                                    Some(e) => {
+                                        log(&format!("repo: put failed: {e}"));
+                                        commit_due = Some(Instant::now() + PUSH_QUIET);
+                                        publish(SyncState { state: "error", pending: dirty.len(), last_sync, error: Some(e) });
+                                    }
+                                }
                             }
-                            Ok(false) => dirty.clear(),
-                            Err(e) => publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) }),
                         }
                     }
                     if push_due.is_some_and(|t| t <= Instant::now()) {
                         push_due = None;
-                        wait_for_quiet();
-                        match repo.push() {
-                            Ok(()) => {
-                                last_sync = Some(now_ms());
-                                publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
-                            }
-                            Err(e) => {
-                                log(&format!("repo: push failed: {e:#}"));
-                                publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) });
+                        if let Remote::Git(repo) = &remote {
+                            wait_for_quiet();
+                            match repo.push() {
+                                Ok(()) => {
+                                    last_sync = Some(now_ms());
+                                    publish(SyncState { state: "idle", pending: repo.pending(), last_sync, error: None });
+                                }
+                                Err(e) => {
+                                    log(&format!("repo: push failed: {e:#}"));
+                                    publish(SyncState { state: "error", pending: repo.pending(), last_sync, error: Some(format!("{e:#}")) });
+                                }
                             }
                         }
                     }
