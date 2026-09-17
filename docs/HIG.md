@@ -53,3 +53,10 @@ that can be checked mechanically.
   tappable without colour.
 - Test in the simulator with the e-ink timing on, and on the device before calling it done. The
   simulator is honest about partial versus full updates, not about ghosting.
+
+## Dark mode
+
+Dark mode is not a theme in the components. The host inverts every pixel on its way to the
+panel (`:theme dark`, remembered in `keys.conf`), so white text on black is exactly the
+black-on-white design mirrored, and every rule above still applies unchanged. Never draw a dark
+theme in components; it would double-invert.

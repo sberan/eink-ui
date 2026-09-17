@@ -25,6 +25,8 @@ pub const DIR: &str = "/mnt/us/todo-app";
 static REPO_CMD: std::sync::Mutex<Option<mpsc::Sender<repo::SyncCmd>>> = std::sync::Mutex::new(None);
 /// Debug commands inject synthetic input through this.
 static MAIN_TX: std::sync::Mutex<Option<mpsc::Sender<Event>>> = std::sync::Mutex::new(None);
+/// Dark mode: every pixel is inverted on its way to the panel, so components stay black on white.
+static INVERT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Events slower than this many milliseconds are logged with a breakdown (`:slow <ms>`).
 static SLOW_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(80);
 const WORK: &str = "/var/tmp/todo-app";
@@ -43,6 +45,8 @@ pub enum Event {
     Synced(Result<SyncOutcome, String>),
     /// An async fetch finished: promise id, then Ok(JSON {status, headers, body}) or Err(message).
     FetchDone(u32, Result<String, String>),
+    /// Repaint the whole panel (theme change).
+    Repaint,
     /// A repository pull changed these paths.
     Files(Vec<String>),
     /// The repository worker's state changed.
@@ -279,9 +283,15 @@ fn paint(fb: &mut epdc::Epdc, scene: &Scene, damage: &[Damage]) {
     for d in damage {
         let r = d.rect;
         let mut region = Vec::with_capacity((r.w * r.h) as usize);
+        let invert = INVERT.load(std::sync::atomic::Ordering::Relaxed);
         for y in r.y..r.y + r.h {
             let row = y as usize * w;
-            region.extend_from_slice(&buf[row + r.x as usize..row + (r.x + r.w) as usize]);
+            let line = &buf[row + r.x as usize..row + (r.x + r.w) as usize];
+            if invert {
+                region.extend(line.iter().map(|v| 255 - v));
+            } else {
+                region.extend_from_slice(line);
+            }
         }
         let full = d.mode == Mode::Gc16;
         any_full |= full;
@@ -310,6 +320,9 @@ fn main() -> Result<()> {
     fs::create_dir_all(DIR)?;
     // volumd kills anything holding /mnt/us busy before exporting it over USB: never sit there
     let _ = std::env::set_current_dir("/");
+    if fs::read_to_string(format!("{DIR}/keys.conf")).map(|s| s.lines().any(|l| l.trim() == "theme=dark")).unwrap_or(false) {
+        INVERT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     if let Some((tz, source)) = detect_tz() {
         std::env::set_var("TZ", &tz);
         log(&format!("timezone {tz} ({source})"));
@@ -655,6 +668,12 @@ fn main() -> Result<()> {
                 if out.app_changed || out.host_changed {
                     restart_self("/var/tmp/eink-host-run");
                 }
+                None
+            }
+            Ok(Event::Repaint) => {
+                scene.borrow_mut().request_full();
+                let d = scene.borrow_mut().commit();
+                paint(&mut fb.borrow_mut(), &scene.borrow(), &d);
                 None
             }
             Ok(Event::Files(changed)) => {
@@ -1224,6 +1243,21 @@ fn debug_command(cmd: &str) -> String {
                 Err(e) => format!("strings: {e}"),
             }
         }
+        c if c.starts_with("theme") => {
+            // :theme dark|light   inverts the panel live and remembers it in keys.conf
+            match c[5..].trim() {
+                "dark" | "light" => {
+                    let dark = c[5..].trim() == "dark";
+                    INVERT.store(dark, std::sync::atomic::Ordering::Relaxed);
+                    let _ = repo::set_conf("theme", if dark { "dark" } else { "" });
+                    if let Some(tx) = MAIN_TX.lock().ok().and_then(|g| g.clone()) {
+                        let _ = tx.send(Event::Repaint);
+                    }
+                    format!("theme {}", if dark { "dark" } else { "light" })
+                }
+                _ => format!("theme {}; usage: :theme dark|light", if INVERT.load(std::sync::atomic::Ordering::Relaxed) { "dark" } else { "light" }),
+            }
+        }
         "sshkey" => match repo::public_key() {
             Ok(k) => k,
             Err(e) => format!("no key: {e:#}"),
@@ -1249,7 +1283,7 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("sync failed: {e:#}"),
         },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file>".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light".into(),
     }
 }
 
