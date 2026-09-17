@@ -12,9 +12,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+/// Tools and keys live on the small persistent partition; the checkout lives on user storage,
+/// which has gigabytes, at the price of being unreachable while the cable exports it over USB.
 pub const BASE: &str = "/var/local/eink-ui";
-pub const REPO: &str = "/var/local/eink-ui/repo";
+pub const REPO: &str = "/mnt/us/eink-ui/repo";
+pub const REPO_PARENT: &str = "/mnt/us/eink-ui";
 pub const TOOLS: &str = "/var/local/eink-ui/bin";
+const OLD_REPO: &str = "/var/local/eink-ui/repo";
 const KEY: &str = "/var/local/eink-ui/deploy_key";
 const PUSH_DEBOUNCE: Duration = Duration::from_secs(3);
 
@@ -94,11 +98,18 @@ pub fn install_tools() -> bool {
     ready
 }
 
-/// Free space on the partition holding the checkout, in MiB.
-pub fn free_mib() -> u64 {
+/// Frees the small partition of a checkout from an earlier layout.
+pub fn remove_old_checkout() {
+    if Path::new(OLD_REPO).exists() {
+        let _ = fs::remove_dir_all(OLD_REPO);
+        log(&format!("removed the old checkout at {OLD_REPO}; {} MiB free on {BASE}", free_mib_at(BASE)));
+    }
+}
+
+pub fn free_mib_at(dir: &str) -> u64 {
     unsafe {
         let mut st: libc::statvfs = std::mem::zeroed();
-        let path = std::ffi::CString::new(BASE).unwrap();
+        let path = std::ffi::CString::new(dir).unwrap();
         if libc::statvfs(path.as_ptr(), &mut st) != 0 {
             return u64::MAX;
         }
@@ -106,7 +117,13 @@ pub fn free_mib() -> u64 {
     }
 }
 
-const MIN_FREE_MIB: u64 = 8;
+/// Free space on the partition holding the checkout, in MiB.
+pub fn free_mib() -> u64 {
+    let _ = fs::create_dir_all(REPO_PARENT);
+    free_mib_at(REPO_PARENT)
+}
+
+const MIN_FREE_MIB: u64 = 64;
 
 fn looks_corrupt(e: &anyhow::Error) -> bool {
     let t = format!("{e:#}");
@@ -242,11 +259,11 @@ impl Repo {
         }
         let free = free_mib();
         if free < MIN_FREE_MIB {
-            bail!("{free} MiB free on {BASE}, not cloning");
+            bail!("{free} MiB free on {REPO_PARENT}, not cloning");
         }
-        fs::create_dir_all(BASE)?;
+        fs::create_dir_all(REPO_PARENT)?;
         log(&format!("repo: cloning {}", self.url));
-        self.git_in(BASE, &["clone", "--depth", "1", "--branch", &self.branch, &self.url, REPO])?;
+        self.git_in(REPO_PARENT, &["clone", "--depth", "1", "--branch", &self.branch, &self.url, REPO])?;
         self.git(&["config", "user.name", "kindle"])?;
         self.git(&["config", "user.email", "kindle@eink-ui"])?;
         Ok(true)
@@ -280,7 +297,7 @@ impl Repo {
     pub fn pull(&self) -> Result<Vec<String>> {
         let free = free_mib();
         if free < MIN_FREE_MIB {
-            bail!("{free} MiB free on {BASE}, not pulling");
+            bail!("{free} MiB free on {REPO_PARENT}, not pulling");
         }
         let _ = self.commit_all("kindle: autosave");
         let before = match self.git(&["rev-parse", "HEAD"]) {

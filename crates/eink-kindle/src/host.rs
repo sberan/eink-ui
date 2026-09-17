@@ -280,6 +280,7 @@ fn main() -> Result<()> {
     let ui_storage: Rc<RefCell<BTreeMap<String, String>>> = Rc::new(RefCell::new(load_storage()));
     let pending_fetch: Rc<RefCell<BTreeMap<u32, Settle>>> = Rc::new(RefCell::new(BTreeMap::new()));
     repo::install_tools();
+    repo::remove_old_checkout();
     let (repo_cmd, repo_state) = repo::start(tx.clone());
     if let Ok(mut g) = REPO_CMD.lock() {
         *g = Some(repo_cmd.clone());
@@ -1083,7 +1084,7 @@ fn debug_command(cmd: &str) -> String {
             }
             Err(e) => format!("could not write keys.conf: {e}"),
         },
-        "repo" => format!("repo_url={} tools_ready={}", repo::config().map(|r| r.url).unwrap_or_else(|| "(none)".into()), repo::tools_ready()),
+        "repo" => format!("repo_url={} tools_ready={} checkout={} free={} MiB (tools partition {} MiB)", repo::config().map(|r| r.url).unwrap_or_else(|| "(none)".into()), repo::tools_ready(), repo::REPO, repo::free_mib(), repo::free_mib_at(repo::BASE)),
         c if c.starts_with("tap ") => {
             let n: Vec<i32> = c[4..].split_whitespace().filter_map(|v| v.parse().ok()).collect();
             match (n.first(), n.get(1), MAIN_TX.lock().ok().and_then(|g| g.clone())) {
