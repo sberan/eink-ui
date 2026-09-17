@@ -1095,6 +1095,14 @@ fn debug_command(cmd: &str) -> String {
             Ok(ms) => { SLOW_MS.store(ms, std::sync::atomic::Ordering::Relaxed); format!("logging events slower than {ms} ms") }
             Err(_) => "usage: :slow <ms>".into(),
         },
+        c if c.starts_with("log") => {
+            // :log [n]  the last n lines of the host log, for sessions nobody was watching
+            let n: usize = c[3..].trim().parse().unwrap_or(40);
+            let text = fs::read_to_string(format!("{DIR}/host.log")).or_else(|_| fs::read_to_string(format!("{WORK}/host.log"))).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            let start = lines.len().saturating_sub(n);
+            lines[start..].join(" | ")
+        }
         "sshkey" => match repo::public_key() {
             Ok(k) => k,
             Err(e) => format!("no key: {e:#}"),
@@ -1120,7 +1128,7 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("sync failed: {e:#}"),
         },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms>".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n]".into(),
     }
 }
 
