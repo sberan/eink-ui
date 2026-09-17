@@ -7,6 +7,10 @@ import type {
   SimulatedEinkHost, Unsubscribe,
 } from '../../host/eink.js';
 
+/** Knobs the simulator UI can turn; the app sees them through the host contract. */
+export const simDevice = { battery: { percent: 73, charging: false } };
+const STORAGE_PREFIX = 'eink:';
+
 /** The C-ABI surface exported by crates/eink-wasm. */
 interface EinkWasmExports {
   memory: WebAssembly.Memory;
@@ -102,8 +106,14 @@ export async function loadEink(
 
     log: (msg: string) => { console.log(`[eink] ${msg}`); },
     buzz: () => { /* no haptics in the browser */ },
-    charging: () => false,
+    charging: () => simDevice.battery.charging,
+    battery: () => ({ ...simDevice.battery }),
     now: () => Date.now(),
+    tz_offset: () => -new Date().getTimezoneOffset(),
+    storage_get: (k) => localStorage.getItem(STORAGE_PREFIX + k),
+    storage_set: (k, v) => localStorage.setItem(STORAGE_PREFIX + k, v),
+    storage_remove: (k) => localStorage.removeItem(STORAGE_PREFIX + k),
+    storage_keys: () => Object.keys(localStorage).filter((k) => k.startsWith(STORAGE_PREFIX)).map((k) => k.slice(STORAGE_PREFIX.length)),
 
     emit(ev: EinkInputEvent): void { for (const cb of listeners.slice()) cb(ev); },
     /** Older name for `emit`, kept for sim/smoke.html. */

@@ -6,6 +6,7 @@ import * as ColumnStories from './Column.stories.js';
 import * as GridStories from './Grid.stories.js';
 import * as KeyboardStories from './Keyboard.stories.js';
 import * as RowStories from './Row.stories.js';
+import * as StatusBarStories from './StatusBar.stories.js';
 import * as TextStories from './Text.stories.js';
 import * as ViewStories from './View.stories.js';
 
@@ -14,7 +15,7 @@ export type StoryModule = { readonly default: Meta } & Record<string, Story | Me
 
 export const STORY_MODULES: readonly StoryModule[] = [
   ViewStories, RowStories, ColumnStories, TextStories,
-  ButtonStories, CheckboxStories, GridStories, KeyboardStories,
+  ButtonStories, CheckboxStories, GridStories, KeyboardStories, StatusBarStories,
 ];
 
 export interface StoryEntry {

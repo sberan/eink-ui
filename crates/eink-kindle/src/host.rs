@@ -33,6 +33,8 @@ pub enum Event {
     Reload,
     /// A background manifest sync finished (or failed with the message).
     Synced(Result<SyncOutcome, String>),
+    /// An async fetch finished: promise id, then Ok(JSON {status, headers, body}) or Err(message).
+    FetchDone(u32, Result<String, String>),
 }
 
 #[derive(Default, Debug)]
@@ -92,9 +94,19 @@ fn draw_badge(fb: &mut epdc::Epdc) {
     let _ = fb.refresh(BADGE_X, BADGE_Y, BADGE, BADGE, epdc::WAVEFORM_DU, false, false);
 }
 
+fn clock_hms() -> String {
+    unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return String::from("--:--:--");
+        }
+        format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    }
+}
+
 pub fn log(msg: &str) {
-    let ts = Command::new("date").arg("+%H:%M:%S").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let line = format!("{ts} {msg}\n");
+    let line = format!("{} {msg}\n", clock_hms());
     print!("{line}");
     if let Ok(mut clients) = DEBUG_CLIENTS.lock() {
         clients.retain_mut(|c| c.write_all(line.as_bytes()).is_ok());
@@ -111,6 +123,43 @@ pub fn log(msg: &str) {
 
 fn lipc_set(src: &str, prop: &str, val: &str) {
     let _ = Command::new("lipc-set-prop").args([src, prop, val]).status();
+}
+
+const STORAGE_FILE: &str = "/var/local/eink-ui/storage.json";
+
+/// UI state the app keeps between restarts (`__eink.storage_*`). Lives outside /mnt/us so USB
+/// drive mode cannot take it away; written whole on every change, it stays tiny.
+fn load_storage() -> BTreeMap<String, String> {
+    fs::read_to_string(STORAGE_FILE).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn save_storage(map: &BTreeMap<String, String>) {
+    let _ = fs::create_dir_all("/var/local/eink-ui");
+    let tmp = format!("{STORAGE_FILE}.tmp");
+    if let Ok(json) = serde_json::to_string(map) {
+        if fs::write(&tmp, json).is_ok() {
+            let _ = fs::rename(&tmp, STORAGE_FILE);
+        }
+    }
+}
+
+fn battery_percent() -> u32 {
+    fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(100)
+}
+
+/// Minutes east of UTC according to the device's own timezone settings.
+fn tz_offset_minutes() -> i64 {
+    unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return 0;
+        }
+        (tm.tm_gmtoff / 60) as i64
+    }
 }
 
 fn charging() -> bool {
@@ -179,14 +228,14 @@ fn main() -> Result<()> {
     // the stock firewall drops inbound Wi-Fi connections: open the debug port
     let _ = Command::new("iptables").args(["-I", "INPUT", "-p", "tcp", "--dport", "2323", "-j", "ACCEPT"]).status();
 
-    let (bundle, fetch_error) = load_bundle()?;
+    let (tx, rx) = mpsc::channel::<Event>();
+    let (bundle, fetch_error) = load_bundle(&tx)?;
     let fb = Rc::new(RefCell::new(epdc::Epdc::open().context("open framebuffer")?));
     log(&fb.borrow().describe());
     if let Some(e) = fetch_error {
         set_error(&mut fb.borrow_mut(), &e);
     }
     let scene = Rc::new(RefCell::new(Scene::new()));
-    let (tx, rx) = mpsc::channel::<Event>();
     input::start(tx.clone());
     {
         let tx = tx.clone();
@@ -197,6 +246,8 @@ fn main() -> Result<()> {
         std::thread::spawn(move || debug_server(tx));
     }
 
+    let ui_storage: Rc<RefCell<BTreeMap<String, String>>> = Rc::new(RefCell::new(load_storage()));
+    let pending_fetch: Rc<RefCell<BTreeMap<u32, Settle>>> = Rc::new(RefCell::new(BTreeMap::new()));
     let rt = Runtime::new()?;
     rt.set_memory_limit(48 << 20);
     let ctx = JsContext::full(&rt)?;
@@ -268,22 +319,54 @@ fn main() -> Result<()> {
                 log(&format!("haptic: {e}"));
             }
         })?)?;
-        // blocking fetch: returns a JSON string {"status","body"}; a JS prelude wraps it in an object.
-        // The app runs on events only, so blocking here is fine.
-        eink.set("_fetch", Function::new(cx.clone(), |url: String, method: Option<String>, body: Option<String>| -> String {
-            let method = method.unwrap_or_else(|| String::from("GET"));
-            let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
-            let req = agent.request(&method, &url).set("content-type", "application/json");
-            let resp = match body { Some(b) => req.send_string(&b), None => req.call() };
-            let (status, text) = match resp {
-                Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
-                Err(ureq::Error::Status(c, r)) => (c, r.into_string().unwrap_or_default()),
-                Err(e) => (0, e.to_string()),
-            };
-            serde_json::json!({ "status": status, "body": text }).to_string()
-        })?)?;
+        // fetch never blocks the UI: the request runs on a thread and the promise is settled
+        // from the main loop when Event::FetchDone arrives (see the prelude for the Response shape).
+        {
+            let pending = pending_fetch.clone();
+            let tx = tx.clone();
+            eink.set("_fetch_start", Function::new(cx.clone(), move |url: String, method: String, body: Option<String>, headers: String, resolve: Function, reject: Function| {
+                let id = {
+                    let mut p = pending.borrow_mut();
+                    let id = p.keys().next_back().map_or(1, |k| k + 1);
+                    let saved_resolve = rquickjs::Persistent::save(&resolve.ctx().clone(), resolve);
+                    let saved_reject = rquickjs::Persistent::save(&reject.ctx().clone(), reject);
+                    p.insert(id, (saved_resolve, saved_reject));
+                    id
+                };
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let result = http_request(&url, &method, body.as_deref(), &headers);
+                    let _ = tx.send(Event::FetchDone(id, result));
+                });
+            })?)?;
+        }
         eink.set("charging", Function::new(cx.clone(), || charging())?)?;
-        eink.set("now", Function::new(cx.clone(), || now_secs() as f64)?)?;
+        eink.set("_battery", Function::new(cx.clone(), || format!(r#"{{"percent":{},"charging":{}}}"#, battery_percent(), charging()))?)?;
+        eink.set("now", Function::new(cx.clone(), || now_secs() as f64 * 1000.0)?)?;
+        eink.set("tz_offset", Function::new(cx.clone(), || tz_offset_minutes() as f64)?)?;
+        {
+            let st = ui_storage.clone();
+            eink.set("_storage_get", Function::new(cx.clone(), move |k: String| serde_json::to_string(&st.borrow().get(&k)).unwrap_or_else(|_| "null".into()))?)?;
+        }
+        {
+            let st = ui_storage.clone();
+            eink.set("storage_set", Function::new(cx.clone(), move |k: String, v: String| {
+                st.borrow_mut().insert(k, v);
+                save_storage(&st.borrow());
+            })?)?;
+        }
+        {
+            let st = ui_storage.clone();
+            eink.set("storage_remove", Function::new(cx.clone(), move |k: String| {
+                if st.borrow_mut().remove(&k).is_some() {
+                    save_storage(&st.borrow());
+                }
+            })?)?;
+        }
+        {
+            let st = ui_storage.clone();
+            eink.set("_storage_keys", Function::new(cx.clone(), move || serde_json::to_string(&st.borrow().keys().collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into()))?)?;
+        }
         g.set("__eink", eink)?;
         g.set("__eink_exit", Function::new(cx.clone(), exit_to_kindle)?)?;
 
@@ -315,12 +398,26 @@ fn main() -> Result<()> {
         })?;
 
         let prelude = r#"
-            __eink.fetch = function (url, opts) {
+            globalThis.fetch = function (url, opts) {
               opts = opts || {};
-              var raw = opts.body === undefined || opts.body === null ? __eink._fetch(url, opts.method || "GET", null) : __eink._fetch(url, opts.method || "GET", String(opts.body));
-              var r = JSON.parse(raw);
-              return { ok: r.status >= 200 && r.status < 300, status: r.status, text: function () { return r.body; }, json: function () { return JSON.parse(r.body); } };
+              var body = opts.body === undefined || opts.body === null ? null : String(opts.body);
+              var headers = opts.headers ? JSON.stringify(opts.headers) : "{}";
+              return new Promise(function (resolve, reject) {
+                __eink._fetch_start(String(url), String(opts.method || "GET"), body, headers, resolve, reject);
+              }).then(function (raw) {
+                var r = JSON.parse(raw);
+                return {
+                  ok: r.status >= 200 && r.status < 300, status: r.status, url: String(url),
+                  headers: { get: function (n) { var v = r.headers[String(n).toLowerCase()]; return v === undefined ? null : v; } },
+                  text: function () { return Promise.resolve(r.body); },
+                  json: function () { return Promise.resolve(JSON.parse(r.body)); }
+                };
+              });
             };
+            __eink.fetch = globalThis.fetch;
+            __eink.battery = function () { return JSON.parse(__eink._battery()); };
+            __eink.storage_get = function (k) { return JSON.parse(__eink._storage_get(String(k))); };
+            __eink.storage_keys = function () { return JSON.parse(__eink._storage_keys()); };
             globalThis.window = globalThis; globalThis.self = globalThis;
         "#;
         cx.eval::<(), _>(prelude).map_err(|e| anyhow::anyhow!("prelude threw: {e}"))?;
@@ -394,6 +491,26 @@ fn main() -> Result<()> {
                     let _ = rt.execute_pending_job();
                 }
                 let _ = reply.send(out);
+                None
+            }
+            Ok(Event::FetchDone(id, result)) => {
+                if let Some((resolve, reject)) = pending_fetch.borrow_mut().remove(&id) {
+                    ctx.with(|cx| {
+                        let outcome = match result {
+                            Ok(json) => resolve.restore(&cx).and_then(|f| f.call::<_, ()>((json,))),
+                            Err(msg) => reject.restore(&cx).and_then(|f| {
+                                let err = rquickjs::Exception::from_message(cx.clone(), &msg)?;
+                                f.call::<_, ()>((err,))
+                            }),
+                        };
+                        if let Err(e) = outcome {
+                            log(&format!("fetch settle failed: {e}"));
+                        }
+                    });
+                    while rt.is_job_pending() {
+                        let _ = rt.execute_pending_job();
+                    }
+                }
                 None
             }
             Ok(Event::Synced(Ok(out))) => {
@@ -663,16 +780,23 @@ fn sync_files() -> Result<SyncOutcome> {
     Ok(out)
 }
 
-/// Start-up: sync the store (a few tries, Wi-Fi may still be coming up), then run DIR/app.js,
-/// falling back to whatever copy is already there when the network is down.
-fn load_bundle() -> Result<(String, Option<String>)> {
+/// Start-up. With a local app.js the UI comes up at once and the store syncs in the background
+/// (a changed bundle or host restarts). Only a first start with nothing local waits for the
+/// network, a few tries, since Wi-Fi may still be coming up.
+fn load_bundle(tx: &mpsc::Sender<Event>) -> Result<(String, Option<String>)> {
+    let cached = format!("{DIR}/app.js");
+    if let Ok(text) = fs::read_to_string(&cached) {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Event::Synced(sync_files().map_err(|e| format!("{e:#}"))));
+        });
+        return Ok((text, None));
+    }
     let mut last_err = String::new();
-    let mut synced = false;
     for attempt in 1..=4 {
         match sync_files() {
             Ok(out) => {
                 log(&format!("store in sync ({} changed)", out.changed.len()));
-                synced = true;
                 break;
             }
             Err(e) => last_err = format!("{e:#}"),
@@ -680,15 +804,47 @@ fn load_bundle() -> Result<(String, Option<String>)> {
         log(&format!("sync {attempt}/4 failed: {last_err}"));
         std::thread::sleep(Duration::from_secs(3));
     }
-    let cached = format!("{DIR}/app.js");
     match fs::read_to_string(&cached) {
-        Ok(text) if synced => Ok((text, None)),
-        Ok(text) => {
-            log("using the local app.js");
-            Ok((text, Some(format!("sync failed, running the local copy: {last_err}"))))
-        }
+        Ok(text) => Ok((text, None)),
         Err(_) => anyhow::bail!("no bundle: {last_err} and no local app.js"),
     }
+}
+
+type Settle = (rquickjs::Persistent<Function<'static>>, rquickjs::Persistent<Function<'static>>);
+
+/// One HTTP round trip for the JS fetch. HTTP error statuses are results, not errors,
+/// like the web's fetch; only transport failures reject.
+fn http_request(url: &str, method: &str, body: Option<&str>, headers_json: &str) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
+    let mut req = agent.request(method, url);
+    if let Ok(serde_json::Value::Object(h)) = serde_json::from_str::<serde_json::Value>(headers_json) {
+        for (k, v) in h {
+            if let Some(v) = v.as_str() {
+                req = req.set(&k, v);
+            }
+        }
+    }
+    if body.is_some() && !headers_json.to_ascii_lowercase().contains("content-type") {
+        req = req.set("Content-Type", "application/json");
+    }
+    let resp = match body {
+        Some(b) => req.send_string(b),
+        None => req.call(),
+    };
+    let resp = match resp {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(format!("{e}")),
+    };
+    let status = resp.status();
+    let mut headers = serde_json::Map::new();
+    for name in resp.headers_names() {
+        if let Some(v) = resp.header(&name) {
+            headers.insert(name.to_ascii_lowercase(), serde_json::Value::String(v.to_string()));
+        }
+    }
+    let body = resp.into_string().map_err(|e| format!("read body: {e}"))?;
+    Ok(serde_json::json!({"status": status, "headers": headers, "body": body}).to_string())
 }
 
 fn download(url: &str) -> Result<Vec<u8>> {
@@ -839,7 +995,7 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>) {
             Err(e) => log(&format!("wake sync failed: {e:#}")),
         }
         if let Ok(ev) = rx.recv_timeout(Duration::from_secs(12)) {
-            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::Reload | Event::Synced(_)) {
+            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::Reload | Event::Synced(_) | Event::FetchDone(..)) {
                 break;
             }
         }

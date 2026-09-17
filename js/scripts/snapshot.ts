@@ -42,6 +42,15 @@ const api = {
   on: (cb: (ev: any) => void) => { listeners.push(cb); return () => { const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1); }; },
   dispatch: (ev: any) => listeners.forEach((cb) => cb(ev)),
   log: (s: string) => console.error('[app]', s),
+  battery: () => ({ percent: 82, charging: false }),
+  charging: () => false,
+  buzz: () => {},
+  now: () => Date.UTC(2026, 8, 17, 9, 41),
+  tz_offset: () => 0,
+  storage_get: () => null,
+  storage_set: () => {},
+  storage_remove: () => {},
+  storage_keys: () => [],
 };
 (globalThis as any).__eink = api;
 (globalThis as any).setTimeout ??= setTimeout;

@@ -1,3 +1,4 @@
+import { StatusBar } from '../../components/index.js';
 import React, { memo, useCallback, useMemo, useState } from 'react';
 import { SAMPLE } from './sample.js';
 import { isTodoList, type TodoItem, type TodoList, type TodoSection } from './schema.js';
@@ -88,15 +89,11 @@ function countDone(sections: readonly TodoSection[]): { done: number; total: num
 function pushToggle(date: string, id: string, api: string): void {
   const host = globalThis.__eink;
   if (!host?.fetch || !api) return;
-  try {
-    host.fetch(`${api}/api/toggle`, {
-      method: 'POST',
-      body: JSON.stringify({ date, id }),
-    });
-  } catch (err) {
-    // offline Kindle: the local toggle still stands
-    host.log(`toggle ${id} failed: ${String(err)}`);
-  }
+  // fire and forget: the local toggle already happened, and an offline Kindle just logs it
+  Promise.resolve()
+    .then(() => host.fetch!(`${api}/api/toggle`, { method: 'POST', body: JSON.stringify({ date, id }) }))
+    .then((res) => { if (!res.ok) host.log(`toggle ${id}: HTTP ${res.status}`); })
+    .catch((err: unknown) => host.log(`toggle ${id} failed: ${String(err)}`));
 }
 
 export interface TodoAppProps {
@@ -152,6 +149,7 @@ export function TodoApp({ data, api = '', onHeaderTap, onFooterTap }: TodoAppPro
         padding: [PAGE_PAD, PAGE_PAD, PAGE_PAD, PAGE_PAD],
       }}
     >
+      <StatusBar style={{ margin: [0, 0, 6, 0] }} />
       <eink-box onTap={onHeaderTap} style={{ flex_direction: 'column' }}>
         <eink-text text={head.day} font_size={HEADER_DAY} bold style={{ height: HEADER_DAY + 12 }} />
         <eink-text text={head.date} font_size={HEADER_DATE} color={90} style={{ height: HEADER_DATE + 10 }} />

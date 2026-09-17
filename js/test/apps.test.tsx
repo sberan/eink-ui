@@ -1,10 +1,10 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { EinkFetchResponse } from '../host/eink.js';
+import type { EinkFetchOptions } from '../host/eink.js';
 import { SAMPLE } from '../apps/todo/sample.js';
 import { formatHeader } from '../apps/todo/index.js';
 import { BLACK, GRID, clueFor, numberGrid, startsEntry } from '../apps/crossword/puzzle.js';
-import { makeHarness, type Harness } from './harness.js';
+import { fetchResponse, makeHarness, tick, type Harness } from './harness.js';
 
 let h: Harness;
 
@@ -50,13 +50,13 @@ describe('todo app', () => {
   });
 
   it('calls __eink.fetch with method and body when the host provides it', async () => {
-    const res: EinkFetchResponse = { ok: true, status: 200, text: () => '{}', json: () => ({}) };
-    const fetchSpy = vi.fn(() => res);
+    const fetchSpy = vi.fn((_url: string, _opts?: EinkFetchOptions) => fetchResponse(200, {}));
     h.host.fetch = fetchSpy;
     const { TodoApp } = await import('../apps/todo/index.js');
     h.renderer.render(<TodoApp api="https://example.test" />);
     const target = h.nodes().find((n) => n.paint.text === 'Call Mum');
     h.mock.emit({ type: 'tap', id: target!.parent, x: 0, y: 0 });
+    await tick();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchSpy.mock.calls[0] as unknown as [string, { method: string; body: string }];
     expect(url).toBe('https://example.test/api/toggle');

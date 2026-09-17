@@ -443,6 +443,7 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
     }
   }
 
+  const storage = new Map<string, string>();
   const api: MockEinkHost = {
     width: W,
     height: H,
@@ -579,7 +580,13 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
     log(msg: string): void { console.log(`[eink] ${msg}`); },
     buzz(): void { /* no haptics in the simulator */ },
     charging(): boolean { return false; },
+    battery() { return { percent: 73, charging: false }; },
     now(): number { return Date.now(); },
+    tz_offset(): number { return 0; },
+    storage_get(k: string) { return storage.get(k) ?? null; },
+    storage_set(k: string, v: string) { storage.set(k, v); },
+    storage_remove(k: string) { storage.delete(k); },
+    storage_keys() { return [...storage.keys()]; },
 
     emit(ev): void { listener?.(ev); },
     fb(): Uint8Array { return fb; },

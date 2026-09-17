@@ -1,7 +1,8 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { EinkStyleProp, TextAlign } from '../host/eink.js';
+import type { BatteryState, EinkStyleProp, TextAlign } from '../host/eink.js';
 import type { EinkBoxIntrinsicProps, TapHandler } from '../global.js';
+import { formatClock, useBattery, useClock } from '../device/index.js';
 
 // All `style` objects use the snake_case Taffy subset from docs/ARCHITECTURE.md.
 
@@ -216,6 +217,64 @@ export const Keyboard = memo(function Keyboard({ onKey, style }: KeyboardProps) 
         <Key label="space" value=" " onKey={emit} grow={6} font_size={28} />
         <Key label="enter" value="ENTER" onKey={emit} grow={2} font_size={28} />
       </eink-box>
+    </eink-box>
+  );
+});
+
+// ---- StatusBar --------------------------------------------------------------
+
+export const STATUS_BAR_HEIGHT = 40;
+
+export interface StatusBarProps {
+  /** Left-aligned text, e.g. the app name or a sync note. */
+  title?: string | undefined;
+  /** Override the live values (stories, tests); otherwise read from the host every minute. */
+  battery?: BatteryState | undefined;
+  time?: Date | undefined;
+  color?: number | undefined;
+  font_size?: number | undefined;
+  style?: EinkStyleProp | undefined;
+  onTap?: TapHandler | undefined;
+}
+
+const GLYPH_W = 36;
+const GLYPH_H = 18;
+
+function BatteryGlyph({ percent, charging, color }: { percent: number; charging: boolean; color: number }) {
+  const inner = Math.round((Math.max(0, Math.min(100, percent)) / 100) * (GLYPH_W - 8));
+  return (
+    <eink-box style={{ flex_direction: 'row', align_items: 'center' }}>
+      <eink-box
+        border={2}
+        border_color={color}
+        radius={3}
+        style={{ width: GLYPH_W, height: GLYPH_H, padding: 3, flex_direction: 'row', align_items: 'center' }}
+      >
+        <eink-box bg={color} style={{ width: inner, height: GLYPH_H - 8 }} />
+      </eink-box>
+      <eink-box bg={color} style={{ width: 3, height: 8 }} />
+      {charging ? <eink-text text="+" font_size={22} bold color={color} style={{ margin: [0, 0, 0, 4] }} /> : null}
+    </eink-box>
+  );
+}
+
+/** One thin row: title on the left, clock and battery on the right. Re-renders on the minute. */
+export const StatusBar = memo(function StatusBar({
+  title, battery, time, color = 90, font_size = 24, style, onTap,
+}: StatusBarProps) {
+  const live = useBattery();
+  const clock = useClock();
+  const b = battery ?? live;
+  const t = time ?? clock;
+  return (
+    <eink-box
+      onTap={onTap}
+      style={{ height: STATUS_BAR_HEIGHT, flex_direction: 'row', align_items: 'center', gap: 10, ...style }}
+    >
+      <eink-text text={title ?? ''} font_size={font_size} color={color} style={{ flex_grow: 1 }} />
+      <eink-text text={formatClock(t)} font_size={font_size} color={color} />
+      <BatteryGlyph percent={b.percent} charging={b.charging} color={color} />
+      <eink-text text={`${Math.round(b.percent)}%`} font_size={font_size} color={color} />
     </eink-box>
   );
 });

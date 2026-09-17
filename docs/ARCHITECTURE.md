@@ -21,7 +21,8 @@ Public API (mirrored 1:1 by the wasm and QuickJS bindings, all ids are u32):
 
 ## Hosts
 - **kindle** (`crates/eink-kindle`, binary `eink-host`): QuickJS runs the React bundle. Globals:
-  `__eink.*` (API above plus `log`, `buzz`, a synchronous `fetch`, `charging`, `now`), `__eink.on(cb)`
+  `__eink.*` (API above plus `log`, `buzz`, `battery`, `charging`, `now` in milliseconds, `tz_offset`,
+  `storage_get/set/remove/keys`, and a web-shaped asynchronous `fetch`, also installed as `globalThis.fetch`), `__eink.on(cb)`
   for input events `{type:"tap"|"key", id, x, y, key}`, `__eink_exit()`, `setTimeout`/`clearTimeout`,
   `console`. Damage rects are copied into the mmap'ed `/dev/fb0` and refreshed with one
   `MXCFB_SEND_UPDATE` each (DU partial, or a flashing GC16 full). Input from `/dev/input`; on battery
@@ -39,3 +40,14 @@ tree ops → `append/insert_before/remove`, `resetAfterCommit` → `commit()` an
 Components (`js/components`): `View`, `Text`, `Button`, `Checkbox`, `Row`, `Column`, `Grid`, `Keyboard`.
 Apps (`js/apps`): `todo` (loads the list via the host's `__eink.fetch`, validated by `schema.ts`),
 `crossword`. Stories (`js/stories`) feed the simulator's gallery.
+
+## Responsiveness rules
+
+The main loop paints and handles input; it never waits on anything else. Network requests run
+on host threads and come back as events: `fetch` returns a promise that the loop settles, the
+store sync reports through `Synced`, and the debug port has its own thread. Partial refreshes
+do not wait for the panel; only a full flash does. The JavaScript side follows suit: nothing
+blocks between an input event and its commit, and anything that can take time is `async` and
+awaited off the input path (a tap toggles locally first and posts in the background). Logging
+does not spawn processes. The first paint uses whatever is already on the device, then the
+live data replaces it.

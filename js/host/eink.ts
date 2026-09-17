@@ -32,17 +32,24 @@ export type EinkListener = (ev: EinkInputEvent) => void;
 /** `on` returns an unsubscribe where the host can offer one; the Kindle cannot. */
 export type Unsubscribe = () => void;
 
-/** The Kindle's fetch is synchronous: QuickJS has no event loop to await on. */
+/** A web-fetch-shaped response: the request ran on a host thread, nothing blocked the UI. */
 export interface EinkFetchResponse {
   readonly ok: boolean;
   readonly status: number;
-  text(): string;
-  json(): unknown;
+  text(): Promise<string>;
+  json(): Promise<unknown>;
 }
 
 export interface EinkFetchOptions {
   readonly method?: string;
   readonly body?: string;
+  readonly headers?: Record<string, string>;
+}
+
+export interface BatteryState {
+  /** 0..100 */
+  readonly percent: number;
+  readonly charging: boolean;
 }
 
 export interface EinkHost {
@@ -67,9 +74,18 @@ export interface EinkHost {
   log(msg: string): void;
   buzz(): void;
   charging(): boolean;
+  battery(): BatteryState;
+  /** Milliseconds since the epoch, like Date.now(). */
   now(): number;
-  /** Synchronous on the Kindle; absent in the browser simulator. */
-  fetch?(url: string, opts?: EinkFetchOptions): EinkFetchResponse;
+  /** Local time offset in minutes east of UTC, from the device's own clock settings. */
+  tz_offset(): number;
+  /** Persistent key/value storage for UI state: a JSON file on the device, localStorage in the browser. */
+  storage_get(key: string): string | null;
+  storage_set(key: string, value: string): void;
+  storage_remove(key: string): void;
+  storage_keys(): string[];
+  /** Present on the Kindle (also installed as globalThis.fetch); absent in the simulator and tests. */
+  fetch?(url: string, opts?: EinkFetchOptions): Promise<EinkFetchResponse>;
 }
 
 /** Hosts driven from a browser UI (the simulator and gallery) also inject input. */

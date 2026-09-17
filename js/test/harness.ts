@@ -3,6 +3,18 @@ import type { NodeId } from '../host/eink.js';
 
 export type HostCall = readonly [string, ...unknown[]];
 
+/** Lets promise chains (async fetch, fire-and-forget toggles) settle before asserting. */
+export const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+export type FetchBody = unknown;
+/** An async fetch response the way the Kindle host shapes it. */
+export function fetchResponse(status: number, body: unknown) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300, status,
+    text: () => Promise.resolve(JSON.stringify(body)), json: () => Promise.resolve(body),
+  });
+}
+
 export interface Harness {
   readonly mock: MockEinkHost;
   readonly host: MockEinkHost;

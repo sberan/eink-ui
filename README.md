@@ -84,7 +84,9 @@ corner and the reason in the log. Details in [docs/DEBUGGING.md](docs/DEBUGGING.
 | `crates/eink-wasm` | C-ABI wasm exports of the core (no wasm-bindgen). |
 | `crates/eink-kindle` | `eink-host`: QuickJS runtime, `/dev/fb0` + EPDC driver, input, power policy. |
 | `js/renderer` | react-reconciler host config targeting the core's API. |
-| `js/components` | View, Row, Column, Text, Button, Checkbox, Grid, Keyboard. |
+| `js/components` | View, Row, Column, Text, Button, Checkbox, Grid, Keyboard, StatusBar. |
+| `js/device` | `useBattery`, `useClock`, `usePageButtons`: device state as hooks, with answers that work without a host. |
+| `js/storage` | Web-Storage-shaped persistent UI state (`useStoredState`, `installLocalStorage`): a JSON file on the device, localStorage in the browser. |
 | `js/apps` | Todo list and crossword demos. |
 | `js/sim` | Browser simulator: component gallery, apps, e-ink refresh timing. |
 | `js/stories` | Component stories shown in the simulator's gallery. |

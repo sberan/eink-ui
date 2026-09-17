@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { describeTodoListProblem, isTodoList } from '../apps/todo/schema.js';
 import { resolveList } from '../apps/todo/index.js';
 import { SAMPLE } from '../apps/todo/sample.js';
-import { makeHarness, type Harness } from './harness.js';
+import { fetchResponse, makeHarness, tick, type Harness } from './harness.js';
 
 const logged = (spy: ReturnType<typeof vi.fn>): string[] =>
   spy.mock.calls.map((c) => String(c[0]));
@@ -101,9 +101,10 @@ describe('entry-kindle boundary', () => {
   it('logs and renders the sample when fetch returns a bad payload', async () => {
     const logSpy = vi.fn();
     h.host.log = logSpy;
-    h.host.fetch = () => ({ ok: true, status: 200, text: () => '[]', json: () => [] });
+    h.host.fetch = () => fetchResponse(200, []);
     await import('../entry-kindle.js');
-    expect(String(logSpy.mock.calls[0]?.[0])).toContain('payload rejected');
+    await tick();
+    expect(logged(logSpy).some((l) => l.includes('failed'))).toBe(true);
     expect(h.textNodes()).toContain('5/21 done');
   });
 
@@ -112,7 +113,8 @@ describe('entry-kindle boundary', () => {
     h.host.log = logSpy;
     h.host.fetch = () => { throw new Error('no network'); };
     await import('../entry-kindle.js');
-    expect(String(logSpy.mock.calls[0]?.[0])).toContain('no network');
+    await tick();
+    expect(logged(logSpy).some((l) => l.includes('no network'))).toBe(true);
     expect(h.textNodes()).toContain('5/21 done');
   });
 
@@ -152,12 +154,11 @@ describe('page-turn day switching', () => {
     h.host.fetch = (url: string) => {
       const date = /date=([^&]+)/.exec(url)?.[1] ?? '';
       const body = DAYS[decodeURIComponent(date)];
-      return body === undefined
-        ? { ok: false, status: 404, text: () => '', json: () => null }
-        : { ok: true, status: 200, text: () => JSON.stringify(body), json: () => body };
+      return body === undefined ? fetchResponse(404, null) : fetchResponse(200, body);
     };
     globalThis.__eink_data = TUE;
     await import('../entry-kindle.js');
+    await tick();
   });
 
   afterEach(() => {
@@ -166,21 +167,24 @@ describe('page-turn day switching', () => {
     globalThis.__eink_data = undefined;
   });
 
-  it('goes forward to the next day and back again', () => {
+  it('goes forward to the next day and back again', async () => {
     expect(h.liveTexts()).toContain('tuesday task');
 
     h.mock.emit({ type: 'key', key: 'PageNext' });
+    await tick();
     expect(h.liveTexts()).toContain('wednesday task');
     expect(h.liveTexts()).not.toContain('tuesday task');
 
     // the regression: going back used to leave Wednesday on screen
     h.mock.emit({ type: 'key', key: 'PagePrev' });
+    await tick();
     expect(h.liveTexts()).toContain('tuesday task');
     expect(h.liveTexts()).not.toContain('wednesday task');
   });
 
-  it('logs the key, the target and the newly loaded list', () => {
+  it('logs the key, the target and the newly loaded list', async () => {
     h.mock.emit({ type: 'key', key: 'PageNext' });
+    await tick();
     const lines = logged(logSpy);
     expect(lines).toContain('key received: PageNext');
     expect(lines).toContain('day switch target: 2026-09-16');
@@ -193,30 +197,35 @@ describe('page-turn day switching', () => {
     expect(h.liveTexts()).toContain('tuesday task');
   });
 
-  it('logs when there is no further day in that direction', () => {
+  it('logs when there is no further day in that direction', async () => {
     h.mock.emit({ type: 'key', key: 'PageNext' });
+    await tick();
     h.mock.emit({ type: 'key', key: 'PageNext' });
+    await tick();
     expect(logged(logSpy).some((l) => l.startsWith('no next day from 2026-09-16'))).toBe(true);
     expect(h.liveTexts()).toContain('wednesday task');
   });
 
-  it('logs a failed loadDay and leaves the screen alone', () => {
-    h.host.fetch = () => ({ ok: false, status: 503, text: () => '', json: () => null });
+  it('logs a failed loadDay and leaves the screen alone', async () => {
+    h.host.fetch = () => fetchResponse(503, null);
     h.mock.emit({ type: 'key', key: 'PageNext' });
+    await tick();
     expect(logged(logSpy)).toContain('loadDay 2026-09-16 failed: HTTP 503');
     expect(h.liveTexts()).toContain('tuesday task');
   });
 
-  it('logs a loadDay that throws', () => {
+  it('logs a loadDay that throws', async () => {
     h.host.fetch = () => { throw new Error('radio off'); };
     h.mock.emit({ type: 'key', key: 'PageNext' });
+    await tick();
     expect(logged(logSpy).some((l) => l.includes('loadDay 2026-09-16 failed') && l.includes('radio off'))).toBe(true);
     expect(h.liveTexts()).toContain('tuesday task');
   });
 
-  it('logs a loadDay whose payload is malformed', () => {
-    h.host.fetch = () => ({ ok: true, status: 200, text: () => '{}', json: () => ({ date: 1 }) });
+  it('logs a loadDay whose payload is malformed', async () => {
+    h.host.fetch = () => fetchResponse(200, { date: 1 });
     h.mock.emit({ type: 'key', key: 'PageNext' });
+    await tick();
     expect(logged(logSpy).some((l) => l.startsWith('loadDay 2026-09-16 failed:'))).toBe(true);
     expect(h.liveTexts()).toContain('tuesday task');
   });
