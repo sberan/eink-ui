@@ -34,6 +34,60 @@ const WORK: &str = "/var/tmp/todo-app";
 const IDLE_AFTER: Duration = Duration::from_secs(180);
 const FRONTLIGHT: &str = "/sys/class/backlight/max77696-bl/brightness";
 const HAPTIC: &str = "/sys/devices/system/drv26xx_haptics/drv26xx_haptics0/play_waveform";
+const AMBIENT: &str = "/sys/devices/system/max44009_ctrl/max44009_ctrl0/max44009_lux";
+const FRONTLIGHT_MAX: u32 = 4095;
+const LIGHT_TICK: Duration = Duration::from_secs(20);
+
+/// Ambient light in lux from the Voyage's MAX44009, if the sensor answers.
+fn ambient_lux() -> Option<u32> {
+    fs::read_to_string(AMBIENT).ok().and_then(|s| s.trim().parse().ok())
+}
+
+/// Frontlight level for an ambient reading: nothing in daylight or a bright room, more as the
+/// room gets darker, capped well below the maximum, which is painful in the dark.
+fn light_for(lux: u32) -> u32 {
+    // calibrated against the Voyage's own scale: a bright room reads about 1300 here
+    match lux {
+        l if l >= 6000 => 0,
+        l if l >= 2500 => 700,
+        l if l >= 900 => 1500,
+        l if l >= 300 => 1900,
+        l if l >= 100 => 2300,
+        l if l >= 30 => 2600,
+        _ => 2900,
+    }
+}
+
+/// `frontlight=` in keys.conf: `auto` (default), `off`, or a fixed 0..4095.
+fn frontlight_setting() -> String {
+    fs::read_to_string(format!("{DIR}/keys.conf")).ok()
+        .and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("frontlight=").map(|v| v.trim().to_string())))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "auto".into())
+}
+
+fn set_frontlight(level: u32) {
+    let _ = fs::write(FRONTLIGHT, format!("{}\n", level.min(FRONTLIGHT_MAX)));
+}
+
+/// One auto-brightness step: hysteresis so a flickering room does not flicker the light, and a
+/// bounded ramp so a change is never a jump. Returns the level written, if any.
+fn auto_light_step(current: &mut u32) -> Option<u32> {
+    if frontlight_setting() != "auto" {
+        return None;
+    }
+    let lux = ambient_lux()?;
+    let target = light_for(lux);
+    let diff = target.abs_diff(*current);
+    if diff < 120 {
+        return None;
+    }
+    let step = diff.min(400);
+    let next = if target > *current { *current + step } else { *current - step };
+    *current = next;
+    set_frontlight(next);
+    Some(next)
+}
 
 pub enum Event {
     Tap(i32, i32),
@@ -577,6 +631,8 @@ fn main() -> Result<()> {
     let mut last_input = Instant::now();
     let mut last_sync = Instant::now();
     let sync_tx = tx.clone();
+    let mut light_level: u32 = fs::read_to_string(FRONTLIGHT).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    let mut last_light = Instant::now() - LIGHT_TICK;
     let mut last_tap = Instant::now() - Duration::from_secs(10);
     loop {
         let fb_for_panic = fb.clone();
@@ -755,6 +811,12 @@ fn main() -> Result<()> {
                     "slow {kind}: {total} ms (js {} ms, blit {blit} ms, epdc {epdc} ms, {rects} rects{}{})",
                     total.saturating_sub(blit + epdc), if full { ", full flash" } else { "" }, if busy { ", git busy" } else { "" }
                 ));
+            }
+        }
+        if last_light.elapsed() >= LIGHT_TICK {
+            last_light = Instant::now();
+            if let Some(level) = auto_light_step(&mut light_level) {
+                log(&format!("frontlight {level} for {} lux", ambient_lux().unwrap_or(0)));
             }
         }
         if last_sync.elapsed() >= Duration::from_secs(300) {
@@ -1259,6 +1321,19 @@ fn debug_command(cmd: &str) -> String {
                 _ => format!("theme {}; usage: :theme dark|light", if INVERT.load(std::sync::atomic::Ordering::Relaxed) { "dark" } else { "light" }),
             }
         }
+        c if c.starts_with("light") => {
+            // :light auto|off|<0-4095>   frontlight policy, remembered in keys.conf
+            let v = c[5..].trim();
+            match v {
+                "" => format!("frontlight={} lux={} level={}", frontlight_setting(), ambient_lux().map(|l| l.to_string()).unwrap_or("?".into()), fs::read_to_string(FRONTLIGHT).unwrap_or_default().trim()),
+                "auto" => { let _ = repo::set_conf("frontlight", "auto"); "frontlight=auto (next tick)".into() }
+                "off" => { let _ = repo::set_conf("frontlight", "off"); set_frontlight(0); "frontlight=off".into() }
+                n => match n.parse::<u32>() {
+                    Ok(level) if level <= FRONTLIGHT_MAX => { let _ = repo::set_conf("frontlight", n); set_frontlight(level); format!("frontlight={level}") }
+                    _ => "usage: :light auto|off|<0-4095>".into(),
+                },
+            }
+        }
         "sshkey" => match repo::public_key() {
             Ok(k) => k,
             Err(e) => format!("no key: {e:#}"),
@@ -1284,7 +1359,7 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("sync failed: {e:#}"),
         },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
     }
 }
 
