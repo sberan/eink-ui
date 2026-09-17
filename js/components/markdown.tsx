@@ -88,6 +88,8 @@ export interface MarkdownProps {
 }
 
 const HEADING_SIZE = [0, 52, 42, 36, 32, 32, 32];
+/** Task rows tile the column with no gap between them, so a finger never lands between two. */
+export const TASK_ROW = 56;
 
 const Task = memo(function Task({ block, size, color, onToggle }: {
   block: Extract<MdBlock, { kind: 'task' }>; size: number; color: number;
@@ -101,7 +103,7 @@ const Task = memo(function Task({ block, size, color, onToggle }: {
       font_size={size}
       color={color}
       onTap={onToggle ? tap : undefined}
-      style={{ margin: [0, 0, 0, block.indent * 28] }}
+      style={{ margin: [0, 0, 0, block.indent * 28], min_height: TASK_ROW, padding: [4, 0, 4, 0] }}
     />
   );
 });
@@ -112,33 +114,34 @@ export const Markdown = memo(function Markdown({
 }: MarkdownProps) {
   const blocks = parseMarkdown(text);
   const gap = Math.round(font_size * 0.4);
+  const space = (i: number) => (i === 0 ? 0 : gap);
   return (
-    <eink-box onTap={onTap} style={{ flex_direction: 'column', gap, ...style }}>
-      {blocks.map((b) => {
+    <eink-box onTap={onTap} style={{ flex_direction: 'column', ...style }}>
+      {blocks.map((b, i) => {
         switch (b.kind) {
           case 'heading':
-            return <eink-text key={b.line} text={b.text} bold font_size={HEADING_SIZE[b.level] ?? 32} color={color} style={{ margin: [b.level === 1 ? 0 : gap, 0, 0, 0] }} />;
+            return <eink-text key={b.line} text={b.text} bold font_size={HEADING_SIZE[b.level] ?? 32} color={color} style={{ margin: [space(i) + (b.level === 1 ? 0 : gap), 0, 0, 0] }} />;
           case 'para':
-            return <eink-text key={b.line} text={b.text} font_size={font_size} color={color} />;
+            return <eink-text key={b.line} text={b.text} font_size={font_size} color={color} style={{ margin: [space(i), 0, 0, 0] }} />;
           case 'task':
             return <Task key={b.line} block={b} size={font_size} color={color} onToggle={onToggleTask} />;
           case 'bullet':
             return (
-              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 12, margin: [0, 0, 0, b.indent * 28] }}>
+              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 12, margin: [space(i), 0, 0, b.indent * 28] }}>
                 <eink-text text="•" font_size={font_size} color={color} style={{ width: 24 }} />
                 <eink-text text={b.text} font_size={font_size} color={color} style={{ flex_grow: 1, flex_shrink: 1 }} />
               </eink-box>
             );
           case 'number':
             return (
-              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 12, margin: [0, 0, 0, b.indent * 28] }}>
+              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 12, margin: [space(i), 0, 0, b.indent * 28] }}>
                 <eink-text text={`${b.n}.`} font_size={font_size} color={color} style={{ width: 44 }} align="right" />
                 <eink-text text={b.text} font_size={font_size} color={color} style={{ flex_grow: 1, flex_shrink: 1 }} />
               </eink-box>
             );
           case 'quote':
             return (
-              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 16 }}>
+              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 16, margin: [space(i), 0, 0, 0] }}>
                 <eink-box bg={0} style={{ width: 4 }} />
                 <eink-text text={b.text} font_size={font_size} color={color} style={{ flex_grow: 1, flex_shrink: 1 }} />
               </eink-box>

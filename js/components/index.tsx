@@ -221,7 +221,7 @@ export const Keyboard = memo(function Keyboard({ onKey, style }: KeyboardProps) 
   );
 });
 
-export { Markdown, parseMarkdown, toggleTaskLine, inlineText } from './markdown.js';
+export { Markdown, parseMarkdown, toggleTaskLine, inlineText, TASK_ROW } from './markdown.js';
 export type { MarkdownProps, MdBlock } from './markdown.js';
 
 // ---- StatusBar --------------------------------------------------------------

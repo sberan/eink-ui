@@ -33,6 +33,20 @@ describe('markdown', () => {
   });
 });
 
+describe('task rows as touch targets', () => {
+  it('tile the column with no gap and a finger-sized height', async () => {
+    const { Markdown, TASK_ROW } = await import('../components/index.js');
+    h.renderer.render(<Markdown text={'# T\n- [ ] one\n- [ ] two\n- [x] three\n'} onToggleTask={() => {}} />);
+    const rows = ['one', 'two', 'three'].map((t) => {
+      const text = h.nodes().find((n) => n.paint.text === t)!;
+      return h.nodes().find((n) => n.id === text.parent)!.rect!;
+    });
+    for (const r of rows) expect(r.h).toBeGreaterThanOrEqual(TASK_ROW);
+    expect(rows[1]!.y).toBe(rows[0]!.y + rows[0]!.h);
+    expect(rows[2]!.y).toBe(rows[1]!.y + rows[1]!.h);
+  });
+});
+
 describe('reader app over the mock repository', () => {
   it('opens the newest day and lists its tasks', async () => {
     const { ReaderApp } = await import('../apps/reader/index.js');
