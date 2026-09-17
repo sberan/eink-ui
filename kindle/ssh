@@ -1,0 +1,7 @@
+#!/bin/sh
+# Run a command on the Kindle (or open a shell) over Wi-Fi. Needs "SSH On" running on the device.
+#   kindle/ssh                       interactive shell
+#   kindle/ssh 'tail -f /var/tmp/todo-app/host.log'
+#   kindle/ssh cat /dev/fb0 > fb.raw  (1088x1448 8-bit gray, stride 1088)
+IP=${KINDLE_IP:-192.168.0.33}
+exec ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$IP" "$@"

@@ -42,23 +42,29 @@ What you get on connect:
 
 ## Wireless deploy loop
 
-No USB cable after the first install, and nothing to copy onto the device but the URL: at every
-start the host downloads `app.js` from `update_url` in `/mnt/us/todo-app/keys.conf` (default
-`https://kindle-todo-one.vercel.app/`; set it with `:url`) and keeps a cached copy for offline
-starts. Publish a new bundle wherever that URL points, then restart the host with `:reload`, or
-with five presses of the power button. For a tight local loop, point the URL at a directory on
-your machine served by any static HTTP server; `kindle/push.sh` does that round trip:
+Nothing is copied onto the device after the first install, only pulled. `update_url` in
+`/mnt/us/todo-app/keys.conf` names a store: a `manifest.json` listing files with their sha256,
+next to the files themselves. The host syncs that store into `/mnt/us/todo-app` at every
+start, on every timed wake, every five minutes while awake, on `:sync`, and on five presses of
+the power button; a changed `app.js` or `eink-host` restarts the host. Files that leave the
+manifest are deleted. A store without a manifest still works: `app.js` alone is fetched.
 
-```sh
-cd js && ./build.sh && cd ..      # new bundle
-kindle/push.sh bundle             # copies js/dist/app.js to the served directory, sends :reload
+The store is written by [eink-mcp](https://github.com/sberan/eink-mcp), an MCP server whose
+`put_file` tool uploads into a Vercel Blob store and rewrites the manifest, so any agent with
+that MCP server can push files to the device:
 
-./build.sh kindle                 # new host binary
-kindle/push.sh host               # copies the binary, sends :update
+```
+put_file path=app.js content=<bundle>            # next sync restarts with the new bundle
+put_file_from_url path=eink-host url=<CI build>  # host binary from anywhere
+status                                            # the base URL to set with :url
 ```
 
-The host restarts by re-executing itself, so the input threads, timers and JavaScript state start
-clean. A launcher loop on the device restarts the host if it ever exits with an error.
+For a tight local loop without the cloud, point `update_url` at a directory on your machine
+served by any static HTTP server (no manifest needed) and use `kindle/push.sh`, or run
+"SSH On" on the device and `scp` straight into `/mnt/us/todo-app`.
+
+Over the debug port, `:sync` pulls the store now and reports what changed, `:url` shows or sets
+the store, `:reload` restarts (which syncs first), and `:update` fetches `eink-host` by name.
 
 ## The error badge
 

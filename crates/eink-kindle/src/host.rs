@@ -31,6 +31,16 @@ pub enum Event {
     Eval(String, mpsc::Sender<String>),
     /// Five quick power-button presses: restart, which refetches the bundle.
     Reload,
+    /// A background manifest sync finished (or failed with the message).
+    Synced(Result<SyncOutcome, String>),
+}
+
+#[derive(Default, Debug)]
+pub struct SyncOutcome {
+    pub changed: Vec<String>,
+    pub removed: Vec<String>,
+    pub app_changed: bool,
+    pub host_changed: bool,
 }
 
 static DEBUG_CLIENTS: std::sync::Mutex<Vec<std::net::TcpStream>> = std::sync::Mutex::new(Vec::new());
@@ -324,6 +334,8 @@ fn main() -> Result<()> {
 
     // event loop: block until input, a timer, or a power event; JS never spins on its own
     let mut last_input = Instant::now();
+    let mut last_sync = Instant::now();
+    let sync_tx = tx.clone();
     let mut last_tap = Instant::now() - Duration::from_secs(10);
     loop {
         let fb_for_panic = fb.clone();
@@ -384,6 +396,19 @@ fn main() -> Result<()> {
                 let _ = reply.send(out);
                 None
             }
+            Ok(Event::Synced(Ok(out))) => {
+                if !out.changed.is_empty() {
+                    log(&format!("store changed: {}", out.changed.join(", ")));
+                }
+                if out.app_changed || out.host_changed {
+                    restart_self("/var/tmp/eink-host-run");
+                }
+                None
+            }
+            Ok(Event::Synced(Err(e))) => {
+                log(&format!("periodic sync failed: {e}"));
+                None
+            }
             Ok(Event::Reload) => {
                 log("power button x5: reload");
                 let _ = fs::write(HAPTIC, "1\n");
@@ -424,6 +449,13 @@ fn main() -> Result<()> {
             while rt.is_job_pending() {
                 let _ = rt.execute_pending_job();
             }
+        }
+        if last_sync.elapsed() >= Duration::from_secs(300) {
+            last_sync = Instant::now();
+            let tx = sync_tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Event::Synced(sync_files().map_err(|e| format!("{e:#}"))));
+            });
         }
         if !charging() && last_input.elapsed() >= IDLE_AFTER {
             sleep_cycle(&rx);
@@ -516,32 +548,146 @@ fn set_update_url(url: &str) -> std::io::Result<()> {
     fs::write(format!("{DIR}/keys.conf"), format!("update_url={url}\n"))
 }
 
-/// The device holds nothing but the URL: every start pulls app.js from it (a few tries, Wi-Fi
-/// may still be coming up), keeps a copy for the next offline start, and falls back to that copy.
-fn load_bundle() -> Result<(String, Option<String>)> {
-    let url = format!("{}app.js", update_url());
-    let cached = format!("{DIR}/app.js");
-    let mut last_err = String::new();
-    for attempt in 1..=4 {
-        match download(&url) {
-            Ok(b) if !b.is_empty() => {
-                let text = String::from_utf8(b).context("app.js is not UTF-8")?;
-                let _ = fs::write(&cached, &text);
-                log(&format!("app.js: {} bytes from {url}", text.len()));
-                return Ok((text, None));
+/// Relative, forward-slash paths only: a manifest entry maps straight onto DIR/<path>.
+fn valid_rel_path(p: &str) -> bool {
+    !p.is_empty()
+        && !p.starts_with('/')
+        && !p.contains('\0')
+        && p.split('/').all(|c| !c.is_empty() && c != "." && c != "..")
+        && !matches!(p, ".sync.json" | ".manifest.etag" | "keys.conf")
+}
+
+/// GET with an ETag; `Ok(None)` means 304, nothing changed.
+fn fetch_if_changed(url: &str, etag: Option<&str>) -> Result<Option<(Vec<u8>, Option<String>)>> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(60)).build();
+    let mut req = agent.get(url);
+    if let Some(e) = etag {
+        req = req.set("If-None-Match", e);
+    }
+    match req.call() {
+        Ok(resp) => {
+            let tag = resp.header("ETag").map(str::to_string);
+            let mut buf = Vec::new();
+            resp.into_reader().read_to_end(&mut buf)?;
+            Ok(Some((buf, tag)))
+        }
+        Err(ureq::Error::Status(304, _)) => Ok(None),
+        Err(e) => Err(anyhow::Error::from(e).context(format!("GET {url}"))),
+    }
+}
+
+fn install_host_binary(data: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = "/var/tmp/eink-host-run.new";
+    fs::write(tmp, data)?;
+    fs::set_permissions(tmp, fs::Permissions::from_mode(0o755))?;
+    fs::rename(tmp, "/var/tmp/eink-host-run")?;
+    Ok(())
+}
+
+/// The device holds nothing but the URL. `update_url` serves a manifest.json (see eink-mcp)
+/// listing files with their sha256; this pulls whatever changed into DIR, removes what left the
+/// manifest, and remembers the manifest ETag so an unchanged store costs one small request.
+/// A store without a manifest (a plain directory with app.js) still works: app.js alone is fetched.
+fn sync_files() -> Result<SyncOutcome> {
+    let base = update_url();
+    let index_path = format!("{DIR}/.sync.json");
+    let etag_path = format!("{DIR}/.manifest.etag");
+    let mut index: BTreeMap<String, String> =
+        fs::read_to_string(&index_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let etag = fs::read_to_string(&etag_path).ok();
+    let mut out = SyncOutcome::default();
+    let manifest_url = format!("{base}manifest.json");
+    let fetched = match fetch_if_changed(&manifest_url, etag.as_deref()) {
+        Ok(f) => f,
+        Err(e) if format!("{e:#}").contains("status code 404") => {
+            // legacy store: only app.js, no manifest
+            let data = download(&format!("{base}app.js"))?;
+            let text = String::from_utf8(data).context("app.js is not UTF-8")?;
+            let changed = fs::read_to_string(format!("{DIR}/app.js")).ok().as_deref() != Some(text.as_str());
+            fs::write(format!("{DIR}/app.js"), &text)?;
+            out.app_changed = changed;
+            if changed {
+                out.changed.push("app.js".into());
             }
-            Ok(_) => last_err = format!("GET {url}: empty body"),
+            return Ok(out);
+        }
+        Err(e) => return Err(e),
+    };
+    let Some((bytes, tag)) = fetched else { return Ok(out) };
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).context("manifest.json is not JSON")?;
+    let files = manifest.get("files").and_then(|f| f.as_object()).context("manifest.json has no files object")?;
+    for (path, entry) in files {
+        if !valid_rel_path(path) {
+            log(&format!("sync: ignoring bad path {path:?}"));
+            continue;
+        }
+        let sha = entry.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let local = format!("{DIR}/{path}");
+        if index.get(path) == Some(&sha) && std::path::Path::new(&local).exists() {
+            continue;
+        }
+        let url = entry.get("url").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| format!("{base}{path}"));
+        let data = download(&url)?;
+        if let Some(dir) = std::path::Path::new(&local).parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let tmp = format!("{local}.part");
+        fs::write(&tmp, &data)?;
+        fs::rename(&tmp, &local)?;
+        if path == "eink-host" {
+            install_host_binary(&data)?;
+            out.host_changed = true;
+        }
+        if path == "app.js" {
+            out.app_changed = true;
+        }
+        index.insert(path.clone(), sha);
+        out.changed.push(path.clone());
+        log(&format!("synced {path} ({} bytes)", data.len()));
+    }
+    for path in index.keys().cloned().collect::<Vec<_>>() {
+        if !files.contains_key(&path) {
+            let _ = fs::remove_file(format!("{DIR}/{path}"));
+            index.remove(&path);
+            out.removed.push(path);
+        }
+    }
+    fs::write(&index_path, serde_json::to_string(&index)?)?;
+    if let Some(t) = tag {
+        let _ = fs::write(&etag_path, t);
+    }
+    if !out.removed.is_empty() {
+        log(&format!("sync: removed {}", out.removed.join(", ")));
+    }
+    Ok(out)
+}
+
+/// Start-up: sync the store (a few tries, Wi-Fi may still be coming up), then run DIR/app.js,
+/// falling back to whatever copy is already there when the network is down.
+fn load_bundle() -> Result<(String, Option<String>)> {
+    let mut last_err = String::new();
+    let mut synced = false;
+    for attempt in 1..=4 {
+        match sync_files() {
+            Ok(out) => {
+                log(&format!("store in sync ({} changed)", out.changed.len()));
+                synced = true;
+                break;
+            }
             Err(e) => last_err = format!("{e:#}"),
         }
-        log(&format!("bundle fetch {attempt}/4 failed: {last_err}"));
+        log(&format!("sync {attempt}/4 failed: {last_err}"));
         std::thread::sleep(Duration::from_secs(3));
     }
+    let cached = format!("{DIR}/app.js");
     match fs::read_to_string(&cached) {
+        Ok(text) if synced => Ok((text, None)),
         Ok(text) => {
-            log("using the cached app.js");
-            Ok((text, Some(format!("bundle fetch failed, running the cached copy: {last_err}"))))
+            log("using the local app.js");
+            Ok((text, Some(format!("sync failed, running the local copy: {last_err}"))))
         }
-        Err(_) => anyhow::bail!("no bundle: {last_err} and no cached app.js"),
+        Err(_) => anyhow::bail!("no bundle: {last_err} and no local app.js"),
     }
 }
 
@@ -562,7 +708,8 @@ fn restart_self(path: &str) -> ! {
 }
 
 /// Over-the-air maintenance, no USB needed:
-///   :reload         restart (every start fetches app.js from update_url)
+///   :reload         restart (every start syncs the store at update_url)
+///   :sync           pull the store now; restarts if app.js or eink-host changed
 ///   :update         fetch eink-host from update_url, install, restart
 ///   :restart        restart with the current files
 ///   :exit           hand the screen back to the Kindle UI
@@ -616,8 +763,21 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("could not write keys.conf: {e}"),
         },
         "url" => format!("update_url={}", update_url()),
+        "sync" => match sync_files() {
+            Ok(out) => {
+                if out.app_changed || out.host_changed {
+                    std::thread::spawn(|| {
+                        std::thread::sleep(Duration::from_millis(300));
+                        restart_self("/var/tmp/eink-host-run");
+                    });
+                }
+                format!("changed: [{}] removed: [{}]{}", out.changed.join(", "), out.removed.join(", "),
+                    if out.app_changed || out.host_changed { "; restarting" } else { "" })
+            }
+            Err(e) => format!("sync failed: {e:#}"),
+        },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/]".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync".into(),
     }
 }
 
@@ -670,9 +830,16 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>) {
         if early || charging() {
             break;
         }
-        // RTC wake: give the app a moment (its own timers can refresh data), then sleep again
-        if let Ok(ev) = rx.recv_timeout(Duration::from_secs(20)) {
-            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::Reload) {
+        // RTC wake: Wi-Fi needs a moment, then pull the store and sleep again
+        std::thread::sleep(Duration::from_secs(8));
+        match sync_files() {
+            Ok(out) if out.app_changed || out.host_changed => restart_self("/var/tmp/eink-host-run"),
+            Ok(out) if !out.changed.is_empty() => log(&format!("store changed: {}", out.changed.join(", "))),
+            Ok(_) => {}
+            Err(e) => log(&format!("wake sync failed: {e:#}")),
+        }
+        if let Ok(ev) = rx.recv_timeout(Duration::from_secs(12)) {
+            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::Reload | Event::Synced(_)) {
                 break;
             }
         }

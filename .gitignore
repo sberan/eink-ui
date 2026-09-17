@@ -11,3 +11,4 @@ dist/
 !docs/*.png
 .DS_Store
 ._*
+third_party/
