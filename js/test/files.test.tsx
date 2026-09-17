@@ -75,3 +75,38 @@ describe('reader app over the mock repository', () => {
     expect(h.liveTexts()).toContain('Something new');
   });
 });
+
+describe('reader keyboard', () => {
+  const open = async () => {
+    const { ReaderApp } = await import('../apps/reader/index.js');
+    h.renderer.render(<ReaderApp />);
+    const add = h.nodes().find((n) => n.paint.text === '+ task');
+    h.mock.emit({ type: 'tap', id: add!.parent, x: 0, y: 0 });
+    await tick();
+  };
+
+  it('is an overlay pinned to the bottom edge, not a flow item after the list', async () => {
+    await open();
+    expect(h.liveTexts()).toContain('New task…');
+    const field = h.nodes().find((n) => n.paint.text === 'New task…')!;
+    let box = h.nodes().find((n) => n.id === field.parent)!;
+    while (box && box.style.position !== 'absolute') box = h.nodes().find((n) => n.id === box.parent)!;
+    expect(box?.style).toMatchObject({ position: 'absolute', bottom: 0, left: 0, right: 0 });
+  });
+
+  it('closes on a page turn', async () => {
+    await open();
+    h.mock.emit({ type: 'key', key: 'PageUp' });
+    await tick();
+    expect(h.liveTexts()).not.toContain('New task…');
+    expect(h.liveTexts()).toContain('Tuesday, September 15');
+  });
+
+  it('closes on the cancel key', async () => {
+    await open();
+    const x = h.nodes().find((n) => n.paint.text === '×');
+    h.mock.emit({ type: 'tap', id: x!.parent, x: 0, y: 0 });
+    await tick();
+    expect(h.liveTexts()).not.toContain('New task…');
+  });
+});

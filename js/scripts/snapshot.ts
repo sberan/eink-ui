@@ -90,9 +90,15 @@ render(createElement(TodoApp, { data: SAMPLE }));
 save('todo');
 unmount();
 
-// ---- reader: the newest day file from the sample repository
+// ---- reader: the newest day file from the sample repository, then with the keyboard open
 render(createElement(ReaderApp));
 save('reader');
+{
+  const addId = api.hit(1000, 1400);
+  if (addId) handleEvent({ type: 'tap', id: addId, x: 1000, y: 1400 } as any);
+  api.commit();
+  save('reader-keyboard');
+}
 unmount();
 
 // ---- crossword: select the first cell and type a word

@@ -30,9 +30,10 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
   const [draft, setDraft] = useState<string | null>(null);
 
   const at = path ? files.indexOf(path) : -1;
+  // a page turn moves focus to another file: the keyboard, if open, goes away
   usePageButtons({
-    onLeft: () => { if (at > 0) setRemembered(files[at - 1]!); },
-    onRight: () => { if (at >= 0 && at < files.length - 1) setRemembered(files[at + 1]!); },
+    onLeft: () => { setDraft(null); if (at > 0) setRemembered(files[at - 1]!); },
+    onRight: () => { setDraft(null); if (at >= 0 && at < files.length - 1) setRemembered(files[at + 1]!); },
   });
 
   const toggle = useCallback((line: number) => {
@@ -60,6 +61,8 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
       : sync.pending > 0 ? `${sync.pending} change${sync.pending === 1 ? '' : 's'} to push`
         : path ? title(path) : folder;
 
+  // The list can be taller than the panel, so the keyboard and the add button are overlays pinned
+  // to the bottom edge rather than flow items after the list.
   return (
     <eink-box bg={255} style={{ width: 1072, height: 1448, flex_direction: 'column', padding: [PAGE_PAD, PAGE_PAD, PAGE_PAD, PAGE_PAD] }}>
       <StatusBar title={status} style={{ margin: [0, 0, 8, 0] }} />
@@ -69,14 +72,18 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
           : <Markdown text={text ?? ''} onToggleTask={toggle} />}
       </Column>
       {draft === null ? (
-        <Row style={{ justify_content: 'flex-end', margin: [12, 0, 0, 0] }}>
+        <eink-box bg={255} style={{ position: 'absolute', right: PAGE_PAD, bottom: PAGE_PAD, padding: 6 }}>
           <Button label="+ task" font_size={28} onTap={() => setDraft('')} style={{ width: 180, height: 56 }} />
-        </Row>
+        </eink-box>
       ) : (
-        <Column style={{ gap: 10, margin: [12, 0, 0, 0] }}>
-          <eink-box border={2} style={{ padding: 12, height: 60 }}>
-            <eink-text text={draft === '' ? 'New task…' : draft} font_size={30} color={draft === '' ? 140 : 0} />
-          </eink-box>
+        <Column bg={255} style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: [0, PAGE_PAD, PAGE_PAD, PAGE_PAD], gap: 10 }}>
+          <eink-box bg={0} style={{ height: 2 }} />
+          <Row style={{ gap: 10, align_items: 'center' }}>
+            <eink-box border={2} style={{ padding: 12, height: 60, flex_grow: 1 }}>
+              <eink-text text={draft === '' ? 'New task…' : draft} font_size={30} color={draft === '' ? 140 : 0} />
+            </eink-box>
+            <Button label="×" font_size={28} onTap={() => setDraft(null)} style={{ width: 72, height: 60 }} />
+          </Row>
           <Keyboard onKey={onKey} />
         </Column>
       )}
