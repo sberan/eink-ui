@@ -28,7 +28,9 @@ export type KeyEvent = { readonly type: 'key'; readonly key: string };
 /** The synced repository changed on disk (a pull landed); these paths should be re-read. */
 export type FilesEvent = { readonly type: 'files'; readonly changed: readonly string[] };
 export type SyncEvent = { readonly type: 'sync'; readonly sync: SyncState };
-export type EinkInputEvent = TapEvent | KeyEvent | FilesEvent | SyncEvent;
+/** Sent just before the device suspends (painted before it does) and right after it wakes. */
+export type PowerEvent = { readonly type: 'power'; readonly state: 'sleep' | 'wake' };
+export type EinkInputEvent = TapEvent | KeyEvent | FilesEvent | SyncEvent | PowerEvent;
 
 export interface SyncState {
   readonly state: 'idle' | 'syncing' | 'offline' | 'error';

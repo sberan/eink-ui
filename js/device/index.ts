@@ -1,7 +1,8 @@
 // Device APIs for apps: battery, clock and the page buttons, with sensible answers when no
 // host is present (tests, snapshots).
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { BatteryState } from '../host/eink.js';
+import { subscribeHostEvents } from '../renderer/index.js';
 import { useKeys } from '../renderer/useKeys.js';
 
 const NO_BATTERY: BatteryState = { percent: 100, charging: false };
@@ -76,4 +77,29 @@ export function usePageButtons({ onLeft, onRight }: PageButtonHandlers): void {
     if (b === 'left') onLeft?.();
     else if (b === 'right') onRight?.();
   });
+}
+
+export type PowerState = 'awake' | 'sleep';
+
+let power: PowerState = 'awake';
+const powerSubscribers = new Set<() => void>();
+
+// listen from module load: an event that lands before the first hook subscribes must not be lost
+subscribeHostEvents((ev) => {
+  if (ev.type !== 'power') return;
+  power = ev.state === 'sleep' ? 'sleep' : 'awake';
+  for (const s of powerSubscribers) s();
+});
+
+function subscribePower(cb: () => void): () => void {
+  powerSubscribers.add(cb);
+  return () => { powerSubscribers.delete(cb); };
+}
+
+/**
+ * Whether the device is about to suspend. Touch does not wake a suspended Kindle, so a visible
+ * hint before sleeping saves a lot of confused tapping.
+ */
+export function usePower(): PowerState {
+  return useSyncExternalStore(subscribePower, () => power);
 }

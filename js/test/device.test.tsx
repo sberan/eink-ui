@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { makeHarness, type Harness } from './harness.js';
+import { makeHarness, tick, type Harness } from './harness.js';
 import { formatClock, pageButton } from '../device/index.js';
 import { getStorage, installLocalStorage, readJson, useStoredState, writeJson } from '../storage/index.js';
 
@@ -31,6 +31,17 @@ describe('device', () => {
     expect(texts).toContain('9:41');
     expect(texts).toContain('41%');
     expect(texts).toContain('+');
+  });
+
+  it('StatusBar announces sleep when the host is about to suspend', async () => {
+    const { StatusBar } = await import('../components/index.js');
+    h.renderer.render(<StatusBar title="todo" />);
+    h.mock.emit({ type: 'power', state: 'sleep' });
+    await tick();
+    expect(h.liveTexts().some((t) => t.startsWith('asleep'))).toBe(true);
+    h.mock.emit({ type: 'power', state: 'wake' });
+    await tick();
+    expect(h.liveTexts()).toContain('todo');
   });
 
   it('StatusBar reads the host battery when none is given', async () => {

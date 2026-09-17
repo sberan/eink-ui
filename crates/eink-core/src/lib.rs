@@ -239,7 +239,7 @@ impl Scene {
             text: TextEngine::new(),
             full_requested: true,
             partials: 0,
-            full_every: 8,
+            full_every: 20,
             committed_once: false,
             pending_holes: Vec::new(),
         }

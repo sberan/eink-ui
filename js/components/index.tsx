@@ -2,7 +2,7 @@ import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { BatteryState, EinkStyleProp, TextAlign } from '../host/eink.js';
 import type { EinkBoxIntrinsicProps, TapHandler } from '../global.js';
-import { formatClock, useBattery, useClock } from '../device/index.js';
+import { formatClock, useBattery, useClock, usePower } from '../device/index.js';
 
 // All `style` objects use the snake_case Taffy subset from docs/ARCHITECTURE.md.
 
@@ -267,14 +267,16 @@ export const StatusBar = memo(function StatusBar({
 }: StatusBarProps) {
   const live = useBattery();
   const clock = useClock();
+  const power = usePower();
   const b = battery ?? live;
   const t = time ?? clock;
+  const shown = power === 'sleep' ? 'asleep · power button wakes' : (title ?? '');
   return (
     <eink-box
       onTap={onTap}
       style={{ height: STATUS_BAR_HEIGHT, flex_direction: 'row', align_items: 'center', gap: 10, ...style }}
     >
-      <eink-text text={title ?? ''} font_size={font_size} color={color} style={{ flex_grow: 1 }} />
+      <eink-text text={shown} font_size={font_size} color={power === 'sleep' ? 0 : color} bold={power === 'sleep'} style={{ flex_grow: 1 }} />
       <eink-text text={formatClock(t)} font_size={font_size} color={color} />
       <BatteryGlyph percent={b.percent} charging={b.charging} color={color} />
       <eink-text text={`${Math.round(b.percent)}%`} font_size={font_size} color={color} />

@@ -200,9 +200,19 @@ fn now_secs() -> u64 {
 
 /// Paint the damaged regions of the scene framebuffer to the e-ink panel: copy each rect into
 /// /dev/fb0, then ask the EPDC for a region update (DU partial, or a flashing GC16 full).
+/// Timings of the paints since the last event, for the slow-event log: (blit ms, epdc ms, rects, any full).
+static PAINT_STATS: std::sync::Mutex<(u128, u128, usize, bool)> = std::sync::Mutex::new((0, 0, 0, false));
+
+fn take_paint_stats() -> (u128, u128, usize, bool) {
+    PAINT_STATS.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default()
+}
+
 fn paint(fb: &mut epdc::Epdc, scene: &Scene, damage: &[Damage]) {
     let w = eink_core::SCREEN_W as usize;
     let buf = scene.fb();
+    let started = Instant::now();
+    let mut blit_ms = 0u128;
+    let mut any_full = false;
     for d in damage {
         let r = d.rect;
         let mut region = Vec::with_capacity((r.w * r.h) as usize);
@@ -211,16 +221,25 @@ fn paint(fb: &mut epdc::Epdc, scene: &Scene, damage: &[Damage]) {
             region.extend_from_slice(&buf[row + r.x as usize..row + (r.x + r.w) as usize]);
         }
         let full = d.mode == Mode::Gc16;
+        any_full |= full;
+        let t = Instant::now();
         if let Err(e) = fb.blit_gray(&region, r.w as u32, r.h as u32, r.x as u32, r.y as u32) {
             log(&format!("blit failed: {e}"));
             continue;
         }
+        blit_ms += t.elapsed().as_millis();
         if let Err(e) = fb.refresh(r.x as u32, r.y as u32, r.w as u32, r.h as u32, epdc::WAVEFORM_DU, full, full) {
             log(&format!("refresh failed: {e}"));
         }
     }
     if has_error() {
         draw_badge(fb);
+    }
+    if let Ok(mut g) = PAINT_STATS.lock() {
+        g.0 += blit_ms;
+        g.1 += started.elapsed().as_millis().saturating_sub(blit_ms);
+        g.2 += damage.len();
+        g.3 |= any_full;
     }
 }
 
@@ -503,7 +522,7 @@ fn main() -> Result<()> {
         let payload = match ev {
             Ok(Event::Tap(x, y)) => {
                 last_input = Instant::now();
-                if last_tap.elapsed() < Duration::from_millis(500) {
+                if last_tap.elapsed() < Duration::from_millis(250) {
                     return true;
                 }
                 last_tap = Instant::now();
@@ -564,21 +583,22 @@ fn main() -> Result<()> {
                 None
             }
             Ok(Event::Files(changed)) => {
-                // a bundle or host committed to the repository wins over the store's copy
+                // a bundle or host committed to the repository wins over the store's copy; the
+                // bundle is copied first so a host restart already finds it
+                let mut restart = false;
+                if changed.iter().any(|p| p == "dist/app.js") {
+                    if let Ok(b) = fs::read(format!("{}/dist/app.js", repo::REPO)) {
+                        restart |= fs::write(format!("{DIR}/app.js"), &b).is_ok();
+                    }
+                }
                 if changed.iter().any(|p| p == "bin/eink-host") {
                     if let Ok(b) = fs::read(format!("{}/bin/eink-host", repo::REPO)) {
                         let _ = fs::write(format!("{DIR}/eink-host"), &b);
-                        if install_host_binary(&b).is_ok() {
-                            restart_self("/var/tmp/eink-host-run");
-                        }
+                        restart |= install_host_binary(&b).is_ok();
                     }
                 }
-                if changed.iter().any(|p| p == "dist/app.js") {
-                    if let Ok(b) = fs::read(format!("{}/dist/app.js", repo::REPO)) {
-                        if fs::write(format!("{DIR}/app.js"), &b).is_ok() {
-                            restart_self("/var/tmp/eink-host-run");
-                        }
-                    }
+                if restart {
+                    restart_self("/var/tmp/eink-host-run");
                 }
                 Some(serde_json::json!({"type": "files", "changed": changed}).to_string())
             }
@@ -614,6 +634,8 @@ fn main() -> Result<()> {
             Err(mpsc::RecvTimeoutError::Disconnected) => return false,
         };
         if let Some(p) = payload {
+            let _ = take_paint_stats();
+            let started = Instant::now();
             ctx.with(|cx| {
                 let ls = listeners.borrow();
                 for cb in ls.iter() {
@@ -629,6 +651,16 @@ fn main() -> Result<()> {
             while rt.is_job_pending() {
                 let _ = rt.execute_pending_job();
             }
+            let total = started.elapsed().as_millis();
+            if total > 80 {
+                let (blit, epdc, rects, full) = take_paint_stats();
+                let kind: String = p.chars().skip(9).take_while(|c| *c != '"').collect();
+                let busy = repo_state.lock().map(|s| s.state == "syncing").unwrap_or(false);
+                log(&format!(
+                    "slow {kind}: {total} ms (js {} ms, blit {blit} ms, epdc {epdc} ms, {rects} rects{}{})",
+                    total.saturating_sub(blit + epdc), if full { ", full flash" } else { "" }, if busy { ", git busy" } else { "" }
+                ));
+            }
         }
         if last_sync.elapsed() >= Duration::from_secs(300) {
             last_sync = Instant::now();
@@ -639,7 +671,9 @@ fn main() -> Result<()> {
             let _ = repo_cmd.send(repo::SyncCmd::Now(None));
         }
         if !charging() && last_input.elapsed() >= IDLE_AFTER {
+            deliver(&ctx, &rt, &listeners, &fb, r#"{"type":"power","state":"sleep"}"#);
             sleep_cycle(&rx, &repo_cmd);
+            deliver(&ctx, &rt, &listeners, &fb, r#"{"type":"power","state":"wake"}"#);
             last_input = Instant::now();
         }
         true
@@ -683,9 +717,12 @@ fn debug_server(tx: mpsc::Sender<Event>) {
             Ok(w) => w,
             Err(_) => continue,
         };
+        let _ = writer.set_write_timeout(Some(Duration::from_millis(500)));
         let _ = writer.write_all(b"eink-host debug: type JS, get results; log lines stream here\n");
         if let Ok(mut c) = DEBUG_CLIENTS.lock() {
-            c.push(writer.try_clone().unwrap());
+            if let Ok(w) = writer.try_clone() {
+                c.push(w);
+            }
         }
         let tx = tx.clone();
         std::thread::spawn(move || {
@@ -928,6 +965,25 @@ fn download(url: &str) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     resp.into_reader().read_to_end(&mut buf)?;
     Ok(buf)
+}
+
+/// Hands one host event to every JS listener and runs the jobs it queued (a React commit paints).
+fn deliver(ctx: &JsContext, rt: &Runtime, listeners: &Rc<RefCell<Vec<rquickjs::Persistent<Function<'static>>>>>, fb: &Rc<RefCell<epdc::Epdc>>, payload: &str) {
+    ctx.with(|cx| {
+        let ls = listeners.borrow();
+        for cb in ls.iter() {
+            if let Ok(f) = cb.clone().restore(&cx) {
+                if let Ok(v) = cx.json_parse(payload) {
+                    if let Err(e) = f.call::<_, ()>((v,)) {
+                        set_error(&mut fb.borrow_mut(), &format!("listener threw: {e}"));
+                    }
+                }
+            }
+        }
+    });
+    while rt.is_job_pending() {
+        let _ = rt.execute_pending_job();
+    }
 }
 
 /// Re-exec the running binary so the new bundle/binary takes over with a clean state.

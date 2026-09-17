@@ -10,7 +10,7 @@ const lists = new Map<string, readonly string[]>();
 const subscribers = new Set<() => void>();
 const NO_SYNC: SyncState = { state: 'idle', pending: 0, last_sync: null, error: null };
 let sync: SyncState = NO_SYNC;
-let wired = false;
+let syncRead = false;
 
 function host() {
   return globalThis.__eink;
@@ -20,26 +20,21 @@ function notify(): void {
   for (const s of subscribers) s();
 }
 
-function wire(): void {
-  if (wired) return;
-  wired = true;
-  const h = host();
-  if (typeof h?.sync_state === 'function') sync = h.sync_state();
-  subscribeHostEvents((ev) => {
-    if (ev.type === 'files') {
-      for (const p of ev.changed) texts.delete(p);
-      lists.clear();
-    } else if (ev.type === 'sync') {
-      sync = ev.sync;
-    } else {
-      return;
-    }
-    notify();
-  });
-}
+// listen from module load: an event that lands before the first hook subscribes must not be lost
+subscribeHostEvents((ev) => {
+  if (ev.type === 'files') {
+    for (const p of ev.changed) texts.delete(p);
+    lists.clear();
+  } else if (ev.type === 'sync') {
+    sync = ev.sync;
+    syncRead = true;
+  } else {
+    return;
+  }
+  notify();
+});
 
 function subscribe(cb: () => void): () => void {
-  wire();
   subscribers.add(cb);
   return () => { subscribers.delete(cb); };
 }
@@ -75,7 +70,11 @@ export function writeFile(path: string, text: string): void {
 }
 
 export function syncState(): SyncState {
-  wire();
+  if (!syncRead) {
+    const h = host();
+    if (typeof h?.sync_state === 'function') sync = h.sync_state();
+    syncRead = true;
+  }
   return sync;
 }
 
@@ -101,4 +100,5 @@ export function resetFiles(): void {
   texts.clear();
   lists.clear();
   sync = NO_SYNC;
+  syncRead = false;
 }

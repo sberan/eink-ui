@@ -165,7 +165,16 @@ pub fn list_files(prefix: &str) -> Vec<String> {
 
 impl Repo {
     fn git_in(&self, dir: &str, args: &[&str]) -> Result<String> {
-        let out = Command::new(format!("{TOOLS}/git"))
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new(format!("{TOOLS}/git"));
+        // git and the ssh client it spawns share one core with the UI: keep them polite
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setpriority(libc::PRIO_PROCESS, 0, 15);
+                Ok(())
+            });
+        }
+        let out = cmd
             .args(args)
             .current_dir(dir)
             .env("HOME", BASE)
