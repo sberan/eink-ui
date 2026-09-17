@@ -685,8 +685,16 @@ fn main() -> Result<()> {
                 let d = scene.borrow_mut().commit();
                 paint(&mut fb.borrow_mut(), &scene.borrow(), &d);
             }
-            sleep_cycle(&rx, &repo_cmd);
+            let deferred = sleep_cycle(&rx, &repo_cmd);
             deliver(&ctx, &rt, &listeners, &fb, r#"{"type":"power","state":"wake"}"#);
+            for ev in deferred {
+                let payload = match ev {
+                    Event::Files(changed) => serde_json::json!({"type": "files", "changed": changed}).to_string(),
+                    Event::SyncState(state) => format!(r#"{{"type":"sync","sync":{}}}"#, state.json()),
+                    _ => continue,
+                };
+                deliver(&ctx, &rt, &listeners, &fb, &payload);
+            }
             last_input = Instant::now();
         }
         true
@@ -1158,7 +1166,11 @@ fn watch_powerd(tx: mpsc::Sender<Event>) {
 }
 
 /// Same policy as the todo app: radio off, frontlight off, RTC wake every 30 min, resume on power key.
-fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd>) {
+/// Sleeps until a button or the USB cable wakes the device, syncing on each timed wake. A pull
+/// that lands during a timed wake is not thrown away: a new bundle or host restarts the host at
+/// once, and other file changes are returned so the app hears about them once it is awake.
+fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd>) -> Vec<Event> {
+    let mut deferred = Vec::new();
     log("idle on battery, sleeping");
     let light = fs::read_to_string(FRONTLIGHT).ok().map(|v| v.trim().to_string()).filter(|v| v != "0");
     let _ = fs::write(FRONTLIGHT, "0\n");
@@ -1194,13 +1206,36 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd
             let _ = repo_cmd.send(repo::SyncCmd::Now(Some(ack_tx)));
             let _ = ack_rx.recv_timeout(Duration::from_secs(40));
         }
-        if let Ok(ev) = rx.recv_timeout(Duration::from_secs(12)) {
-            if !matches!(ev, Event::Power(_) | Event::Eval(..) | Event::Reload | Event::Synced(_) | Event::FetchDone(..) | Event::Files(_) | Event::SyncState(_)) {
-                break;
+        let window = Instant::now() + Duration::from_secs(12);
+        let mut wake = false;
+        while let Ok(ev) = rx.recv_timeout(window.saturating_duration_since(Instant::now())) {
+            match ev {
+                Event::Files(changed) => {
+                    if changed.iter().any(|p| p == "dist/app.js" || p == "bin/eink-host") {
+                        log("repo changed the bundle or host while asleep: installing");
+                        if let Ok(b) = fs::read(format!("{}/dist/app.js", repo::REPO)) {
+                            let _ = fs::write(format!("{DIR}/app.js"), &b);
+                        }
+                        if let Ok(b) = fs::read(format!("{}/bin/eink-host", repo::REPO)) {
+                            let _ = fs::write(format!("{DIR}/eink-host"), &b);
+                            let _ = install_host_binary(&b);
+                        }
+                        restart_self("/var/tmp/eink-host-run");
+                    }
+                    deferred.push(Event::Files(changed));
+                }
+                Event::SyncState(s) => deferred.push(Event::SyncState(s)),
+                Event::Synced(Ok(out)) if out.app_changed || out.host_changed => restart_self("/var/tmp/eink-host-run"),
+                Event::Power(_) | Event::Eval(..) | Event::Reload | Event::Synced(_) | Event::FetchDone(..) => {}
+                _ => { wake = true; break; }
             }
+        }
+        if wake {
+            break;
         }
     }
     if let Some(v) = light {
         let _ = fs::write(FRONTLIGHT, format!("{v}\n"));
     }
+    deferred
 }
