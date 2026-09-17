@@ -47,8 +47,15 @@ export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
   const toggle = useCallback((line: number) => {
     const text = path ? readFile(path) : null;
     if (path && text !== null) {
+      // temporary probe: where the handler's milliseconds go on the device
+      const t0 = Date.now();
       globalThis.__eink?.buzz();
-      writeFile(path, toggleTaskLine(text, line));
+      const t1 = Date.now();
+      const next = toggleTaskLine(text, line);
+      const t2 = Date.now();
+      writeFile(path, next);
+      const t3 = Date.now();
+      if (t3 - t0 >= 3) globalThis.__eink?.log(`toggle: buzz ${t1 - t0} ms, edit ${t2 - t1} ms, write+notify ${t3 - t2} ms`);
     }
   }, [path]);
 

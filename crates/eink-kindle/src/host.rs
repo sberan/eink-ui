@@ -30,6 +30,15 @@ static MAIN_TX: std::sync::Mutex<Option<mpsc::Sender<Event>>> = std::sync::Mutex
 static INVERT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Events slower than this many milliseconds are logged with a breakdown (`:slow <ms>`).
 static SLOW_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(80);
+
+/// Background work runs below the UI thread (nice 10 against its -5) so a sync, a download or a
+/// TLS handshake never steals the CPU from a tap on this single-core device.
+pub fn bg<F: FnOnce() + Send + 'static>(f: F) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 10); }
+        f()
+    })
+}
 const WORK: &str = "/var/tmp/todo-app";
 const IDLE_AFTER: Duration = Duration::from_secs(180);
 const FRONTLIGHT: &str = "/sys/class/backlight/max77696-bl/brightness";
@@ -372,6 +381,10 @@ fn paint(fb: &mut epdc::Epdc, scene: &Scene, damage: &[Damage]) {
 }
 
 fn main() -> Result<()> {
+    // the UI thread outranks everything the host spawns (see `bg`); needs root, which the Kindle has
+    if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -5) } != 0 {
+        log("setpriority failed: background work will compete with the UI thread");
+    }
     fs::create_dir_all(DIR)?;
     // volumd kills anything holding /mnt/us busy before exporting it over USB: never sit there
     let _ = std::env::set_current_dir("/");
@@ -504,7 +517,7 @@ fn main() -> Result<()> {
         eink.set("clear_error", Function::new(cx.clone(), || clear_error())?)?;
         eink.set("buzz", Function::new(cx.clone(), || {
             // the haptics driver blocks for the pulse: never on the UI thread
-            std::thread::spawn(|| {
+            bg(|| {
                 if let Err(e) = fs::write(HAPTIC, "1\n") {
                     log(&format!("buzz failed: {e}"));
                 }
@@ -525,7 +538,7 @@ fn main() -> Result<()> {
                     id
                 };
                 let tx = tx.clone();
-                std::thread::spawn(move || {
+                bg(move || {
                     let result = http_request(&url, &method, body.as_deref(), &headers);
                     let _ = tx.send(Event::FetchDone(id, result));
                 });
@@ -789,7 +802,7 @@ fn main() -> Result<()> {
                     std::thread::sleep(Duration::from_secs(2));
                     fb.borrow_mut().unblank();
                     if line.starts_with("notCharging") {
-                        std::thread::spawn(|| recover_hidden_log("host.log"));
+                        bg(|| recover_hidden_log("host.log"));
                     }
                     scene.borrow_mut().request_full();
                     let d = scene.borrow_mut().commit();
@@ -839,7 +852,7 @@ fn main() -> Result<()> {
         if last_sync.elapsed() >= Duration::from_secs(300) {
             last_sync = Instant::now();
             let tx = sync_tx.clone();
-            std::thread::spawn(move || {
+            bg(move || {
                 let _ = tx.send(Event::Synced(sync_files().map_err(|e| format!("{e:#}"))));
             });
             let _ = repo_cmd.send(repo::SyncCmd::Now(None));
@@ -913,7 +926,7 @@ fn debug_server(tx: mpsc::Sender<Event>) {
             }
         }
         let tx = tx.clone();
-        std::thread::spawn(move || {
+        bg(move || {
             for line in BufReader::new(stream).lines().map_while(Result::ok) {
                 let code = line.trim().to_string();
                 if code.is_empty() {
@@ -1090,7 +1103,7 @@ fn load_bundle(tx: &mpsc::Sender<Event>) -> Result<(String, Option<String>)> {
     let cached = format!("{DIR}/app.js");
     if let Ok(text) = fs::read_to_string(&cached) {
         let tx = tx.clone();
-        std::thread::spawn(move || {
+        bg(move || {
             let _ = tx.send(Event::Synced(sync_files().map_err(|e| format!("{e:#}"))));
         });
         return Ok((text, None));
@@ -1195,7 +1208,7 @@ fn restart_self(path: &str) -> ! {
 fn debug_command(cmd: &str) -> String {
     match cmd {
         "reload" => {
-            std::thread::spawn(|| {
+            bg(|| {
                 std::thread::sleep(Duration::from_millis(300));
                 restart_self("/var/tmp/eink-host-run");
             });
@@ -1213,7 +1226,7 @@ fn debug_command(cmd: &str) -> String {
                     let _ = fs::write(format!("{DIR}/eink-host"), &b); // persist when /mnt/us is available
                     let _ = fs::rename(tmp, "/var/tmp/eink-host-run");
                     log(&format!("updated eink-host ({} bytes) from {url}", b.len()));
-                    std::thread::spawn(|| {
+                    bg(|| {
                         std::thread::sleep(Duration::from_millis(300));
                         restart_self("/var/tmp/eink-host-run");
                     });
@@ -1223,14 +1236,14 @@ fn debug_command(cmd: &str) -> String {
             }
         }
         "restart" => {
-            std::thread::spawn(|| {
+            bg(|| {
                 std::thread::sleep(Duration::from_millis(300));
                 restart_self("/var/tmp/eink-host-run");
             });
             "restarting".into()
         }
         "exit" => {
-            std::thread::spawn(|| {
+            bg(|| {
                 std::thread::sleep(Duration::from_millis(300));
                 exit_to_kindle();
             });
@@ -1367,7 +1380,7 @@ fn debug_command(cmd: &str) -> String {
         } {
             Ok(out) => {
                 if out.app_changed || out.host_changed {
-                    std::thread::spawn(|| {
+                    bg(|| {
                         std::thread::sleep(Duration::from_millis(300));
                         restart_self("/var/tmp/eink-host-run");
                     });

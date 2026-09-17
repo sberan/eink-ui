@@ -411,7 +411,7 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
     let (ctx, crx) = mpsc::channel::<SyncCmd>();
     let shared = Arc::new(Mutex::new(SyncState { state: "offline", pending: 0, last_sync: None, error: None }));
     let state = shared.clone();
-    std::thread::spawn(move || {
+    crate::bg(move || {
         let publish = |s: SyncState| {
             if let Ok(mut g) = state.lock() {
                 *g = s.clone();
