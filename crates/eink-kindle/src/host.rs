@@ -435,7 +435,7 @@ fn main() -> Result<()> {
         let eink = Object::new(cx.clone())?;
         {
             let sc = scene.clone();
-            eink.set("create", Function::new(cx.clone(), move |kind: String| sc.borrow_mut().create(if kind == "text" { Kind::Text } else { Kind::Box }))?)?;
+            eink.set("create", Function::new(cx.clone(), move |kind: String| sc.borrow_mut().create(match kind.as_str() { "text" => Kind::Text, "markdown" => Kind::Markdown, _ => Kind::Box }))?)?;
         }
         {
             let sc = scene.clone();
@@ -671,8 +671,12 @@ fn main() -> Result<()> {
                 }
                 last_tap = Instant::now();
                 let id = scene.borrow().hit(x, y);
-                log(&format!("tap ({x},{y}) -> node {id}"));
-                Some(format!(r#"{{"type":"tap","id":{id},"x":{x},"y":{y}}}"#))
+                let line = scene.borrow().hit_line(x, y);
+                log(&format!("tap ({x},{y}) -> node {id}{}", line.map(|l| format!(" line {l}")).unwrap_or_default()));
+                Some(match line {
+                    Some(l) => format!(r#"{{"type":"tap","id":{id},"x":{x},"y":{y},"line":{l}}}"#),
+                    None => format!(r#"{{"type":"tap","id":{id},"x":{x},"y":{y}}}"#),
+                })
             }
             Ok(Event::Key(code)) => {
                 last_input = Instant::now();

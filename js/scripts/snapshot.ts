@@ -24,7 +24,7 @@ function withStr<T>(s: string, f: (p: number, n: number) => T): T {
 const api = {
   width: ex.screen_w() as number,
   height: ex.screen_h() as number,
-  create: (kind: string) => ex.create(kind === 'text' ? 1 : 0),
+  create: (kind: string) => ex.create(kind === 'text' ? 1 : kind === 'markdown' ? 2 : 0),
   set_props: (id: number, json: string) => withStr(json, (p, n) => ex.set_props(id, p, n)),
   append: (a: number, b: number) => ex.append(a, b),
   insert_before: (a: number, b: number, c: number) => ex.insert_before(a, b, c),
@@ -32,6 +32,7 @@ const api = {
   set_root: (id: number) => ex.set_root(id),
   request_full: () => ex.request_full(),
   hit: (x: number, y: number) => ex.hit(x | 0, y | 0),
+  hit_line: (x: number, y: number) => ex.hit_line(x | 0, y | 0),
   commit: () => {
     const n = ex.commit();
     const v = new Int32Array(ex.memory.buffer, ex.damage_ptr(), n * 5);

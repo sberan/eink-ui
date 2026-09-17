@@ -34,16 +34,19 @@ describe('markdown', () => {
 });
 
 describe('task rows as touch targets', () => {
-  it('tile the column with no gap and a finger-sized height', async () => {
+  it('tile the column with no gap and a finger-sized height, and taps report the line', async () => {
     const { Markdown, TASK_ROW } = await import('../components/index.js');
-    h.renderer.render(<Markdown text={'# T\n- [ ] one\n- [ ] two\n- [x] three\n'} onToggleTask={() => {}} />);
-    const rows = ['one', 'two', 'three'].map((t) => {
-      const text = h.nodes().find((n) => n.paint.text === t)!;
-      return h.nodes().find((n) => n.id === text.parent)!.rect!;
-    });
-    for (const r of rows) expect(r.h).toBeGreaterThanOrEqual(TASK_ROW);
-    expect(rows[1]!.y).toBe(rows[0]!.y + rows[0]!.h);
-    expect(rows[2]!.y).toBe(rows[1]!.y + rows[1]!.h);
+    const seen: number[] = [];
+    h.renderer.render(<Markdown text={'# T\n- [ ] one\n- [ ] two\n- [x] three\n'} onToggleTask={(line) => seen.push(line)} />);
+    const md = h.nodes().find((n) => n.kind === 'markdown')!;
+    const rows = (md.md ?? []).filter((b) => b.kind === 'task');
+    expect(rows).toHaveLength(3);
+    for (const r of rows) expect(r.rect.h).toBeGreaterThanOrEqual(TASK_ROW);
+    expect(rows[1]!.rect.y).toBe(rows[0]!.rect.y + rows[0]!.rect.h);
+    expect(rows[2]!.rect.y).toBe(rows[1]!.rect.y + rows[1]!.rect.h);
+    h.tapTask('two');
+    await tick();
+    expect(seen).toEqual([2]);
   });
 });
 
@@ -51,16 +54,14 @@ describe('reader app over the mock repository', () => {
   it('opens the newest day and lists its tasks', async () => {
     const { ReaderApp } = await import('../apps/reader/index.js');
     h.renderer.render(<ReaderApp />);
-    const texts = h.liveTexts();
-    expect(texts).toContain('Wednesday, September 16');
-    expect(texts).toContain('Battery drain measurement overnight');
+    expect(h.hasText('Wednesday, September 16')).toBe(true);
+    expect(h.hasText('Battery drain measurement overnight')).toBe(true);
   });
 
   it('a tap on a task writes the flipped file back to the host', async () => {
     const { ReaderApp } = await import('../apps/reader/index.js');
     h.renderer.render(<ReaderApp />);
-    const row = h.nodes().find((n) => n.paint.text === 'Post the return label');
-    h.mock.emit({ type: 'tap', id: row!.parent, x: 0, y: 0 });
+    h.tapTask('Post the return label');
     await tick();
     expect(h.host.writes).toHaveLength(1);
     const [path, text] = h.host.writes[0]!;
@@ -74,10 +75,10 @@ describe('reader app over the mock repository', () => {
     h.renderer.render(<ReaderApp />);
     h.mock.emit({ type: 'key', key: 'PageUp' });
     await tick();
-    expect(h.liveTexts()).toContain('Tuesday, September 15');
+    expect(h.hasText('Tuesday, September 15')).toBe(true);
     h.mock.emit({ type: 'key', key: 'PageDown' });
     await tick();
-    expect(h.liveTexts()).toContain('Wednesday, September 16');
+    expect(h.hasText('Wednesday, September 16')).toBe(true);
   });
 
   it('re-reads a file when the host reports a pull', async () => {
@@ -86,7 +87,7 @@ describe('reader app over the mock repository', () => {
     h.host.files.set('days/2026-09-16.md', '# Wednesday, September 16\n- [ ] Something new\n');
     h.mock.emit({ type: 'files', changed: ['days/2026-09-16.md'] });
     await tick();
-    expect(h.liveTexts()).toContain('Something new');
+    expect(h.hasText('Something new')).toBe(true);
   });
 });
 
@@ -113,7 +114,7 @@ describe('reader keyboard', () => {
     h.mock.emit({ type: 'key', key: 'PageUp' });
     await tick();
     expect(h.liveTexts()).not.toContain('New task…');
-    expect(h.liveTexts()).toContain('Tuesday, September 15');
+    expect(h.hasText('Tuesday, September 15')).toBe(true);
   });
 
   it('closes on the cancel key', async () => {

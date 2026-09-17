@@ -11,13 +11,9 @@ afterEach(() => { h.renderer.unmount(); globalThis.__eink = undefined; });
 it('two taps in a row keep both boxes ticked', async () => {
   const { ReaderApp } = await import('../apps/reader/index.js');
   h.renderer.render(<ReaderApp />);
-  const tapOn = (label: string) => {
-    const row = h.nodes().find((n) => n.paint.text === label);
-    h.mock.emit({ type: 'tap', id: row!.parent, x: 0, y: 0 });
-  };
-  tapOn('Battery drain measurement overnight');
+  h.tapTask('Battery drain measurement overnight');
   await tick();
-  tapOn('Post the return label');
+  h.tapTask('Post the return label');
   await tick();
   const last = h.host.writes[h.host.writes.length - 1]![1];
   expect(last).toContain('- [x] Battery drain measurement overnight');
@@ -44,8 +40,7 @@ it('paints input events immediately', async () => {
   h.renderer.setFrameMs(1000);
   h.renderer.render(<ReaderApp />);
   h.calls.length = 0;
-  const row = h.nodes().find((n) => n.paint.text === 'Post the return label');
-  h.mock.emit({ type: 'tap', id: row!.parent, x: 0, y: 0 });
+  h.tapTask('Post the return label');
   await tick();
   // React commits after the event batch; the paint must still not wait for the frame window
   expect(h.calls.filter((c) => c[0] === 'commit')).toHaveLength(1);

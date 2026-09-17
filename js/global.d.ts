@@ -9,6 +9,8 @@ export interface TapPayload {
   readonly x: number;
   readonly y: number;
   readonly target: NodeId;
+  /** For a tap on <eink-markdown>: the source line of the task under the finger. */
+  readonly line?: number;
   stopPropagation(): void;
 }
 
@@ -29,11 +31,17 @@ export interface EinkTextIntrinsicProps extends EinkCommonProps {
   children?: string | number | undefined;
 }
 
+/** A markdown document laid out and painted by the core; taps report the task line. */
+export interface EinkMarkdownIntrinsicProps extends EinkCommonProps {
+  text: string;
+}
+
 declare global {
   namespace JSX {
     interface IntrinsicElements {
       'eink-box': EinkBoxIntrinsicProps;
       'eink-text': EinkTextIntrinsicProps;
+      'eink-markdown': EinkMarkdownIntrinsicProps;
     }
   }
 

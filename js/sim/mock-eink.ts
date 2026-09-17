@@ -8,6 +8,7 @@ import type {
   RefreshMode, Sides, SimulatedEinkHost, SyncState, TextAlign, Unsubscribe,
 } from '../host/eink.js';
 import { SAMPLE_FILES } from '../files/sample.js';
+import { parseMarkdown, TASK_ROW } from '../components/markdown.js';
 
 export const SCREEN_W = 1072;
 export const SCREEN_H = 1448;
@@ -62,9 +63,24 @@ function defaultPaint(): Paint {
   };
 }
 
+/** A laid-out markdown block inside a markdown node: rect relative to the node. */
+export interface MdLaid {
+  readonly rect: Rect;
+  readonly line: number;
+  readonly kind: string;
+  readonly text: string;
+  readonly checked: boolean;
+  readonly textX: number;
+  readonly textW: number;
+  readonly size: number;
+  readonly bold: boolean;
+}
+
 export interface MockNode {
   readonly id: NodeId;
   readonly kind: NodeKind;
+  /** Markdown nodes only: the blocks as last laid out. */
+  md: MdLaid[] | null;
   paint: Paint;
   style: EinkStyle;
   parent: NodeId;
@@ -187,10 +203,69 @@ export interface MockEinkHost extends SimulatedEinkHost {
   _root(): NodeId;
 }
 
+/** The layout rules of eink-core/markdown.rs, for tests and the browser fallback. */
+function mdLayoutWith(measureText: MeasureText, text: string, font: number, width: number): { laid: MdLaid[]; height: number } {
+  const HEADING = [0, 52, 42, 36, 32, 32, 32];
+  const gap = Math.round(font * 0.4);
+  const laid: MdLaid[] = [];
+  let y = 0;
+  parseMarkdown(text).forEach((b, i) => {
+    const space = i === 0 ? 0 : gap;
+    const base = { line: b.line, kind: b.kind, checked: b.kind === 'task' ? b.checked : false, textX: 0, textW: width, size: font, bold: false };
+    switch (b.kind) {
+      case 'heading': {
+        const size = HEADING[b.level] ?? 32;
+        const h = measureText(b.text, size, true, width).h;
+        const top = y + space + (b.level === 1 ? 0 : gap);
+        laid.push({ ...base, text: b.text, rect: { x: 0, y: Math.round(top), w: width, h: Math.round(h) }, size, bold: true });
+        y = top + h; break;
+      }
+      case 'para': {
+        const h = measureText(b.text, font, false, width).h;
+        const top = y + space;
+        laid.push({ ...base, text: b.text, rect: { x: 0, y: Math.round(top), w: width, h: Math.round(h) } });
+        y = top + h; break;
+      }
+      case 'task': {
+        const tx = b.indent * 28 + 30 + 16;
+        const tw = Math.max(1, width - tx);
+        const th = measureText(b.text, font, false, tw).h;
+        const h = Math.max(TASK_ROW, th + 8);
+        laid.push({ ...base, text: b.text, rect: { x: b.indent * 28, y: Math.round(y), w: width - b.indent * 28, h: Math.round(h) }, textX: 30 + 16, textW: tw });
+        y += h; break;
+      }
+      case 'bullet': case 'number': {
+        const col = b.kind === 'bullet' ? 24 : 44;
+        const tx = b.indent * 28 + col + 12;
+        const tw = Math.max(1, width - tx);
+        const h = measureText(b.text, font, false, tw).h;
+        const top = y + space;
+        laid.push({ ...base, text: b.text, rect: { x: 0, y: Math.round(top), w: width, h: Math.round(h) }, textX: tx, textW: tw });
+        y = top + h; break;
+      }
+      case 'quote': {
+        const tx = 4 + 16;
+        const tw = Math.max(1, width - tx);
+        const h = measureText(b.text, font, false, tw).h;
+        const top = y + space;
+        laid.push({ ...base, text: b.text, rect: { x: 0, y: Math.round(top), w: width, h: Math.round(h) }, textX: tx, textW: tw });
+        y = top + h; break;
+      }
+      case 'hr': {
+        const top = y + space + gap;
+        laid.push({ ...base, text: '', rect: { x: 0, y: Math.round(top), w: width, h: 2 } });
+        y = top + 2 + gap; break;
+      }
+    }
+  });
+  return { laid, height: Math.ceil(y) };
+}
+
 export function createMockEink(options: MockOptions = {}): MockEinkHost {
   const W = options.width ?? SCREEN_W;
   const H = options.height ?? SCREEN_H;
   const measureText = options.measureText ?? approxMeasure;
+  const mdLayout = (text: string, font: number, width: number) => mdLayoutWith(measureText, text, font, width);
   const drawText = options.drawText ?? null;
   const fullEvery = options.fullEvery ?? 8;
 
@@ -253,6 +328,12 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
       n.lines = m.lines;
       contentW = m.w;
       contentH = m.h;
+    } else if (n.kind === 'markdown') {
+      const w = innerAvailW ?? W;
+      const { laid, height } = mdLayout(n.paint.text, n.paint.font_size, w);
+      n.md = laid;
+      contentW = w;
+      contentH = height;
     } else {
       const dir = s.flex_direction === 'row' ? 'row' : 'column';
       const gap = s.gap ?? 0;
@@ -290,7 +371,7 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
     const s = n.style;
     if (s.display === 'none') { n.rect = null; return; }
     n.rect = rect(x, y, w, h);
-    if (n.kind === 'text') return;
+    if (n.kind === 'text' || n.kind === 'markdown') return;
 
     const pad = sides(s.padding) ?? NO_INSETS;
     const bw = n.paint.border;
@@ -398,6 +479,27 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
       return;
     }
     if (p.bg !== null) fill(clip(r, clipRect), p.bg);
+    if (n.kind === 'markdown') {
+      for (const b of n.md ?? []) {
+        const row = { x: r.x + b.rect.x, y: r.y + b.rect.y, w: b.rect.w, h: b.rect.h };
+        if (b.kind === 'hr') { fill(clip(row, clipRect), p.color); continue; }
+        if (b.kind === 'task') {
+          const bx = row.x + (b.rect.x);
+          const by = row.y + Math.round((row.h - 30) / 2);
+          fill(clip({ x: bx, y: by, w: 30, h: 30 }, clipRect), p.color);
+          if (!b.checked) fill(clip({ x: bx + 3, y: by + 3, w: 24, h: 24 }, clipRect), 255);
+        }
+        if (b.kind === 'quote') fill(clip({ x: row.x, y: row.y, w: 4, h: row.h }, clipRect), p.color);
+        if (!b.text || !drawText) continue;
+        const m = measureText(b.text, b.size, b.bold, b.textW);
+        const ty = b.kind === 'task' ? row.y + Math.round((row.h - m.h) / 2) : row.y;
+        drawText(fb, W, H, {
+          lines: m.lines, text: b.text, x: row.x + b.textX, y: ty, w: b.textW, h: m.h,
+          font_size: b.size, bold: b.bold, color: p.color, align: 'left', clip: clip(r, clipRect),
+        });
+      }
+      return;
+    }
     if (!p.text || !drawText) return;
     drawText(fb, W, H, {
       lines: n.lines ?? [p.text],
@@ -459,10 +561,10 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
       const id = nextId++;
       log.creates++;
       nodes.set(id, {
-        id, kind: kind === 'text' ? 'text' : 'box',
+        id, kind: kind === 'text' ? 'text' : kind === 'markdown' ? 'markdown' : 'box',
         paint: defaultPaint(), style: {},
         parent: 0, children: [], dirty: true,
-        rect: null, lastRect: null, lines: null, measured: null,
+        rect: null, lastRect: null, lines: null, measured: null, md: null,
       });
       return id;
     },
@@ -524,6 +626,13 @@ export function createMockEink(options: MockOptions = {}): MockEinkHost {
         return n.paint.hit ? id : 0;
       };
       return rootId ? walk(rootId) : 0;
+    },
+    hit_line(x: number, y: number): number {
+      const n = node(api.hit(x, y));
+      const r = n?.lastRect;
+      if (!n || !r || n.kind !== 'markdown') return -1;
+      const b = (n.md ?? []).find((b) => b.kind === 'task' && x >= r.x + b.rect.x && x < r.x + b.rect.x + b.rect.w && y >= r.y + b.rect.y && y < r.y + b.rect.y + b.rect.h);
+      return b ? b.line : -1;
     },
 
     commit(): DamageRect[] {

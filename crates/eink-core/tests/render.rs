@@ -62,3 +62,28 @@ fn todo_list_layout_and_partial_damage() {
     // nothing changed -> no damage
     assert!(s.commit().is_empty());
 }
+
+#[test]
+fn markdown_node_toggles_one_row() {
+    let mut scene = Scene::new();
+    let root = scene.create(Kind::Box);
+    scene.set_props(root, r#"{"bg":255,"style":{"width":1072,"height":1448,"padding":36}}"#).unwrap();
+    let md = scene.create(Kind::Markdown);
+    let text = "# Today\n\n- [ ] one\n- [ ] two\n- [x] three\n\nA paragraph after the list.";
+    scene.set_props(md, &format!(r#"{{"text":{},"font_size":30,"hit":true}}"#, serde_json::to_string(text).unwrap())).unwrap();
+    scene.append(root, md);
+    scene.set_root(root);
+    let first = scene.commit();
+    assert_eq!(first.len(), 1, "first paint is a full flash");
+    // the second task row is a tappable band at least 56 px tall, tiled under the first
+    let line = scene.hit_line(60, 36 + 52 + 12 + 12 + 56 + 10);
+    assert_eq!(line, Some(3), "tap in the second row reports source line 3");
+    // toggling it damages that row only
+    let toggled = text.replace("- [ ] two", "- [x] two");
+    scene.set_props(md, &format!(r#"{{"text":{}}}"#, serde_json::to_string(&toggled).unwrap())).unwrap();
+    let d = scene.commit();
+    assert_eq!(d.len(), 1);
+    assert!(d[0].rect.h <= 64 && d[0].rect.h >= 56, "one row: {:?}", d[0].rect);
+    assert_eq!(d[0].mode, Mode::Du);
+    save(&scene, "markdown.png");
+}

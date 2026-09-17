@@ -1,5 +1,6 @@
 //! eink-core: retained scene tree + flexbox layout + grayscale rasterizer with damage tracking.
 //! Platform-agnostic: compiles natively (Kindle host, tests) and to wasm32 (simulator).
+pub mod markdown;
 mod raster;
 mod text;
 
@@ -17,6 +18,8 @@ pub const SCREEN_H: u32 = 1448;
 pub enum Kind {
     Box,
     Text,
+    /// A whole markdown document laid out and painted natively; see markdown.rs.
+    Markdown,
 }
 
 /// Paint properties; layout lives in Taffy. Everything is optional in `set_props` JSON.
@@ -101,6 +104,8 @@ struct Node {
     children: Vec<u32>,
     dirty: bool,
     last_rect: Option<Rect>, // absolute rect at the last commit
+    /// Markdown only: the blocks as last painted (relative rect, digest), for block-level damage.
+    md_blocks: Vec<(Rect, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -253,8 +258,8 @@ impl Scene {
         let id = self.next_id;
         self.next_id += 1;
         let style = Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Default::default() };
-        let layout = if kind == Kind::Text { self.tree.new_leaf_with_context(style, id).unwrap() } else { self.tree.new_leaf(style).unwrap() };
-        self.nodes.insert(id, Node { kind, paint: Paint::default(), layout, parent: 0, children: Vec::new(), dirty: true, last_rect: None });
+        let layout = if kind != Kind::Box { self.tree.new_leaf_with_context(style, id).unwrap() } else { self.tree.new_leaf(style).unwrap() };
+        self.nodes.insert(id, Node { kind, paint: Paint::default(), layout, parent: 0, children: Vec::new(), dirty: true, last_rect: None, md_blocks: Vec::new() });
         id
     }
 
@@ -386,6 +391,17 @@ impl Scene {
         walk(self, self.root, x, y)
     }
 
+    /// For a tap on a markdown node: the source line of the task under (x, y), if any.
+    pub fn hit_line(&self, x: i32, y: i32) -> Option<u32> {
+        let id = self.hit(x, y);
+        let n = self.nodes.get(&id)?;
+        if n.kind != Kind::Markdown {
+            return None;
+        }
+        let r = n.last_rect?;
+        markdown::task_line_at(&self.text, &n.paint.text, n.paint.font_size, r.w as f32, x - r.x, y - r.y)
+    }
+
     pub fn commit(&mut self) -> Vec<Damage> {
         if self.root == 0 {
             return Vec::new();
@@ -399,7 +415,16 @@ impl Scene {
                 Size { width: AvailableSpace::Definite(SCREEN_W as f32), height: AvailableSpace::Definite(SCREEN_H as f32) },
                 |known, available, _node, ctx, _style| {
                     let Some(id) = ctx.map(|c| *c) else { return Size::ZERO };
-                    let paint = &nodes[&id].paint;
+                    let node = &nodes[&id];
+                    let paint = &node.paint;
+                    if node.kind == Kind::Markdown {
+                        let w = match (known.width, available.width) {
+                            (Some(w), _) | (None, AvailableSpace::Definite(w)) => w,
+                            _ => SCREEN_W as f32,
+                        };
+                        let (_, h) = markdown::layout(text, &paint.text, paint.font_size, w);
+                        return Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) };
+                    }
                     // content-size contract: min-content = longest word, max-content = unwrapped
                     let (w, h) = match (known.width, available.width) {
                         (Some(w), _) | (None, AvailableSpace::Definite(w)) => text.measure(&paint.text, paint.font_size, paint.bold, Some(w)),
@@ -419,6 +444,33 @@ impl Scene {
         for (id, r) in &rects {
             let n = self.nodes.get_mut(id).unwrap();
             let moved = n.last_rect != Some(*r);
+            if n.kind == Kind::Markdown {
+                // block-level damage: a toggled task repaints its row, not the whole document
+                let (laid, _) = markdown::layout(&self.text, &n.paint.text, n.paint.font_size, r.w as f32);
+                let now: Vec<(Rect, u64)> = laid.iter().map(|l| (l.rect, markdown::digest(l))).collect();
+                if moved || n.last_rect.is_none() {
+                    if let Some(old) = n.last_rect {
+                        changed.push(old);
+                    }
+                    changed.push(*r);
+                } else if n.dirty {
+                    let len = now.len().max(n.md_blocks.len());
+                    for i in 0..len {
+                        match (now.get(i), n.md_blocks.get(i)) {
+                            (Some(a), Some(b)) if a == b => {}
+                            (a, b) => {
+                                for br in [a, b].into_iter().flatten() {
+                                    changed.push(Rect::new(r.x + br.0.x, r.y + br.0.y, br.0.w, br.0.h));
+                                }
+                            }
+                        }
+                    }
+                }
+                n.md_blocks = now;
+                n.dirty = false;
+                n.last_rect = Some(*r);
+                continue;
+            }
             if n.dirty || moved {
                 if let Some(old) = n.last_rect {
                     changed.push(old);

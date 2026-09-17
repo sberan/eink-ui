@@ -29,6 +29,7 @@ interface EinkWasmExports {
   set_root(id: number): void;
   request_full(): void;
   hit(x: number, y: number): number;
+  hit_line(x: number, y: number): number;
   /** Returns the damage rect count; the rects live at damage_ptr(). */
   commit(): number;
   damage_ptr(): number;
@@ -71,7 +72,7 @@ export async function loadEink(
     width: ex.screen_w(),
     height: ex.screen_h(),
 
-    create: (kind: NodeKind): NodeId => ex.create(kind === 'text' ? 1 : 0),
+    create: (kind: NodeKind): NodeId => ex.create(kind === 'text' ? 1 : kind === 'markdown' ? 2 : 0),
     set_props: (id, json) => withStr(json, (p, n) => ex.set_props(id, p, n)),
     append: (parent, child) => ex.append(parent, child),
     insert_before: (parent, child, before) => ex.insert_before(parent, child, before),
@@ -79,6 +80,7 @@ export async function loadEink(
     set_root: (id) => ex.set_root(id),
     request_full: () => ex.request_full(),
     hit: (x, y) => ex.hit(x | 0, y | 0),
+    hit_line: (x, y) => ex.hit_line(x | 0, y | 0),
 
     commit(): DamageRect[] {
       const n = ex.commit();

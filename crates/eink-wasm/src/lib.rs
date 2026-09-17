@@ -27,7 +27,7 @@ fn s<'a>(p: *const u8, len: usize) -> &'a str {
 
 #[no_mangle]
 pub extern "C" fn create(kind: u32) -> u32 {
-    SCENE.with(|sc| sc.borrow_mut().create(if kind == 1 { Kind::Text } else { Kind::Box }))
+    SCENE.with(|sc| sc.borrow_mut().create(match kind { 1 => Kind::Text, 2 => Kind::Markdown, _ => Kind::Box }))
 }
 
 #[no_mangle]
@@ -106,4 +106,10 @@ pub extern "C" fn screen_w() -> u32 {
 #[no_mangle]
 pub extern "C" fn screen_h() -> u32 {
     eink_core::SCREEN_H
+}
+
+/// Source line of the task under (x, y) when the hit node is markdown, else -1.
+#[no_mangle]
+pub extern "C" fn hit_line(x: i32, y: i32) -> i32 {
+    SCENE.with(|sc| sc.borrow().hit_line(x, y).map(|l| l as i32).unwrap_or(-1))
 }

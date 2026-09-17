@@ -10,12 +10,13 @@ import type {
 } from '../host/eink.js';
 import type { EinkBoxIntrinsicProps, EinkTextIntrinsicProps } from '../global.js';
 
-export type IntrinsicType = 'eink-box' | 'eink-text';
+export type IntrinsicType = 'eink-box' | 'eink-text' | 'eink-markdown';
 export type IntrinsicProps = EinkBoxIntrinsicProps | EinkTextIntrinsicProps;
 
 export const KIND: Record<IntrinsicType, NodeKind> = {
   'eink-box': 'box',
   'eink-text': 'text',
+  'eink-markdown': 'markdown',
 };
 
 type PaintKey = keyof EinkPaintProps;

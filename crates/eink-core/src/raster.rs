@@ -95,7 +95,16 @@ fn fill_rounded(fb: &mut [u8], r: Rect, clip: Rect, gray: u8, radius: i32) {
     }
 }
 
+/// A clipped solid fill, for the markdown painter.
+pub fn fill_clipped(fb: &mut [u8], r: Rect, clip: Rect, gray: u8) {
+    fill_rounded(fb, r, clip, gray, 0);
+}
+
 pub fn paint_node(fb: &mut [u8], kind: Kind, p: &Paint, r: Rect, clip: Rect, text: &mut TextEngine) {
+    if kind == Kind::Markdown {
+        crate::markdown::paint(fb, text, p, r, clip);
+        return;
+    }
     if let Some(bg) = p.bg {
         fill_rounded(fb, r, clip, bg, p.radius as i32);
     }

@@ -1,7 +1,6 @@
 import React, { memo, useCallback } from 'react';
 import type { EinkStyleProp } from '../host/eink.js';
-import type { TapHandler } from '../global.js';
-import { Checkbox } from './index.js';
+import type { TapHandler, TapPayload } from '../global.js';
 
 /** The block subset the panel can draw. `line` is the source line, for edits. */
 export type MdBlock =
@@ -81,77 +80,40 @@ export interface MarkdownProps {
   text: string;
   font_size?: number | undefined;
   color?: number | undefined;
-  /** Makes task rows tappable. */
+  /** Makes task rows tappable; `checked` is the new state. */
   onToggleTask?: ((line: number, checked: boolean) => void) | undefined;
   onTap?: TapHandler | undefined;
   style?: EinkStyleProp | undefined;
 }
 
-const HEADING_SIZE = [0, 52, 42, 36, 32, 32, 32];
 /** Task rows tile the column with no gap between them, so a finger never lands between two. */
 export const TASK_ROW = 56;
 
-const Task = memo(function Task({ block, size, color, onToggle }: {
-  block: Extract<MdBlock, { kind: 'task' }>; size: number; color: number;
-  onToggle: ((line: number, checked: boolean) => void) | undefined;
-}) {
-  const tap = useCallback(() => onToggle?.(block.line, !block.checked), [onToggle, block.line, block.checked]);
-  return (
-    <Checkbox
-      checked={block.checked}
-      label={block.text}
-      font_size={size}
-      color={color}
-      onTap={onToggle ? tap : undefined}
-      style={{ margin: [0, 0, 0, block.indent * 28], min_height: TASK_ROW, padding: [4, 0, 4, 0] }}
-    />
-  );
-});
-
-/** Headings, paragraphs, bullets, numbers, quotes, rules and tappable task lists. */
+/**
+ * One native node: the core parses, lays out and paints the document (eink-core/markdown.rs),
+ * and a tap on a task row arrives with its source line. This file keeps the parser for edits.
+ */
 export const Markdown = memo(function Markdown({
   text, font_size = 30, color = 0, onToggleTask, onTap, style,
 }: MarkdownProps) {
-  const blocks = parseMarkdown(text);
-  const gap = Math.round(font_size * 0.4);
-  const space = (i: number) => (i === 0 ? 0 : gap);
+  const tap = useCallback((p: TapPayload) => {
+    if (p.line !== undefined && onToggleTask) {
+      const block = parseMarkdown(text).find((b) => b.kind === 'task' && b.line === p.line);
+      if (block && block.kind === 'task') {
+        onToggleTask(p.line, !block.checked);
+        return;
+      }
+    }
+    onTap?.(p);
+  }, [text, onToggleTask, onTap]);
   return (
-    <eink-box onTap={onTap} style={{ flex_direction: 'column', ...style }}>
-      {blocks.map((b, i) => {
-        switch (b.kind) {
-          case 'heading':
-            return <eink-text key={b.line} text={b.text} bold font_size={HEADING_SIZE[b.level] ?? 32} color={color} style={{ margin: [space(i) + (b.level === 1 ? 0 : gap), 0, 0, 0] }} />;
-          case 'para':
-            return <eink-text key={b.line} text={b.text} font_size={font_size} color={color} style={{ margin: [space(i), 0, 0, 0] }} />;
-          case 'task':
-            return <Task key={b.line} block={b} size={font_size} color={color} onToggle={onToggleTask} />;
-          case 'bullet':
-            return (
-              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 12, margin: [space(i), 0, 0, b.indent * 28] }}>
-                <eink-text text="•" font_size={font_size} color={color} style={{ width: 24 }} />
-                <eink-text text={b.text} font_size={font_size} color={color} style={{ flex_grow: 1, flex_shrink: 1 }} />
-              </eink-box>
-            );
-          case 'number':
-            return (
-              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 12, margin: [space(i), 0, 0, b.indent * 28] }}>
-                <eink-text text={`${b.n}.`} font_size={font_size} color={color} style={{ width: 44 }} align="right" />
-                <eink-text text={b.text} font_size={font_size} color={color} style={{ flex_grow: 1, flex_shrink: 1 }} />
-              </eink-box>
-            );
-          case 'quote':
-            return (
-              <eink-box key={b.line} style={{ flex_direction: 'row', gap: 16, margin: [space(i), 0, 0, 0] }}>
-                <eink-box bg={0} style={{ width: 4 }} />
-                <eink-text text={b.text} font_size={font_size} color={color} style={{ flex_grow: 1, flex_shrink: 1 }} />
-              </eink-box>
-            );
-          case 'hr':
-            return <eink-box key={b.line} bg={0} style={{ height: 2, margin: [gap, 0, gap, 0] }} />;
-          default:
-            return null;
-        }
-      })}
-    </eink-box>
+    <eink-markdown
+      text={text}
+      font_size={font_size}
+      color={color}
+      hit={onToggleTask !== undefined || onTap !== undefined}
+      onTap={tap}
+      style={style}
+    />
   );
 });

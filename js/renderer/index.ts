@@ -301,7 +301,7 @@ export function handleEvent(ev: EinkInputEvent): void {
   }
 }
 
-function dispatchTap(ev: { id: NodeId; x: number; y: number }): void {
+function dispatchTap(ev: { id: NodeId; x: number; y: number; line?: number }): void {
   let inst = instances.get(ev.id) ?? null;
   // bubble to the nearest ancestor with an onTap
   while (inst) {
@@ -310,6 +310,7 @@ function dispatchTap(ev: { id: NodeId; x: number; y: number }): void {
       let stopped = false;
       const payload: TapPayload = {
         id: inst.id, x: ev.x, y: ev.y, target: ev.id,
+        ...(ev.line !== undefined ? { line: ev.line } : {}),
         stopPropagation() { stopped = true; },
       };
       h(payload);

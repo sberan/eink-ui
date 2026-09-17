@@ -10,7 +10,7 @@
 export type NodeId = number;
 
 /** `create(kind)` takes the lowercase name of eink_core::Kind. */
-export type NodeKind = 'box' | 'text';
+export type NodeKind = 'box' | 'text' | 'markdown';
 
 /** "du" = fast B/W partial, "gc16" = full quality flash. */
 export type RefreshMode = 'du' | 'gc16';
@@ -23,7 +23,8 @@ export interface DamageRect {
   readonly mode: RefreshMode;
 }
 
-export type TapEvent = { readonly type: 'tap'; readonly id: NodeId; readonly x: number; readonly y: number };
+/** `line`: the source line of the task under the tap, when the node is markdown. */
+export type TapEvent = { readonly type: 'tap'; readonly id: NodeId; readonly x: number; readonly y: number; readonly line?: number };
 export type KeyEvent = { readonly type: 'key'; readonly key: string };
 /** The synced repository changed on disk (a pull landed); these paths should be re-read. */
 export type FilesEvent = { readonly type: 'files'; readonly changed: readonly string[] };
@@ -80,6 +81,8 @@ export interface EinkHost {
   commit(): DamageRect[];
   /** Deepest node with `hit: true` at (x, y), or 0. */
   hit(x: number, y: number): NodeId;
+  /** Source line of the task under (x, y) when the hit node is markdown, else -1. */
+  hit_line(x: number, y: number): number;
   request_full(): void;
   /** 8-bit grayscale, row-major, `width * height` bytes. Re-read after each commit. */
   fb(): Uint8Array;

@@ -23,8 +23,12 @@ export interface Harness {
   /** Every set_props call as [id, parsed payload]. */
   propCalls(): [NodeId, Record<string, unknown>][];
   textNodes(): string[];
-  /** Text of the nodes still attached to the root, unlike textNodes(). */
+  /** Text of the nodes still attached to the root, unlike textNodes(). Markdown nodes contribute their whole document. */
   liveTexts(): string[];
+  /** True when any live text or markdown document contains `s`. */
+  hasText(s: string): boolean;
+  /** Taps the middle of the task row whose label is `label` (inside a markdown node). */
+  tapTask(label: string): void;
   nodes(): MockNode[];
   tree(id?: NodeId, depth?: number): string;
 }
@@ -60,7 +64,7 @@ export async function makeHarness(): Promise<Harness> {
     const walk = (id: NodeId): void => {
       const n = mock._nodes.get(id);
       if (!n) return;
-      if (n.kind === 'text') out.push(n.paint.text);
+      if (n.kind === 'text' || n.kind === 'markdown') out.push(n.paint.text);
       for (const c of n.children) walk(c);
     };
     walk(mock._root());
@@ -77,6 +81,20 @@ export async function makeHarness(): Promise<Harness> {
 
   return {
     mock, host, calls, renderer, tree, liveTexts,
+    hasText: (t: string) => liveTexts().some((x) => x.includes(t)),
+    tapTask(label: string) {
+      for (const n of mock._nodes.values()) {
+        if (n.kind !== 'markdown' || !n.lastRect) continue;
+        const b = (n.md ?? []).find((b) => b.kind === 'task' && b.text === label);
+        if (!b) continue;
+        const x = n.lastRect.x + b.rect.x + 40;
+        const y = n.lastRect.y + b.rect.y + Math.floor(b.rect.h / 2);
+        const line = host.hit_line(x, y);
+        mock.emit(line >= 0 ? { type: 'tap', id: host.hit(x, y), x, y, line } : { type: 'tap', id: host.hit(x, y), x, y });
+        return;
+      }
+      throw new Error(`no task row labelled ${JSON.stringify(label)}`);
+    },
     propCalls: () => calls
       .filter((c) => c[0] === 'set_props')
       .map((c) => [c[1] as NodeId, JSON.parse(c[2] as string) as Record<string, unknown>]),

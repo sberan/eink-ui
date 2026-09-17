@@ -297,7 +297,8 @@ void loadHost().then((host) => {
     const b = canvas.getBoundingClientRect();
     const x = Math.round((ev.clientX - b.left) * (W / b.width));
     const y = Math.round((ev.clientY - b.top) * (H / b.height));
-    host.emit({ type: 'tap', id: host.hit(x, y), x, y });
+    const line = host.hit_line(x, y);
+    host.emit(line >= 0 ? { type: 'tap', id: host.hit(x, y), x, y, line } : { type: 'tap', id: host.hit(x, y), x, y });
   });
 
   window.addEventListener('keydown', (ev) => {
