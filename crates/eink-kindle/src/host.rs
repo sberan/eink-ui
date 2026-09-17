@@ -106,6 +106,53 @@ fn draw_badge(fb: &mut epdc::Epdc) {
     let _ = fb.refresh(BADGE_X, BADGE_Y, BADGE, BADGE, epdc::WAVEFORM_DU, false, false);
 }
 
+/// Zone names the stock firmware may record, with POSIX rules (the device has no zoneinfo).
+const ZONES: &[(&str, &str)] = &[
+    ("America/New_York", "EST5EDT,M3.2.0,M11.1.0"), ("America/Detroit", "EST5EDT,M3.2.0,M11.1.0"), ("America/Toronto", "EST5EDT,M3.2.0,M11.1.0"),
+    ("America/Chicago", "CST6CDT,M3.2.0,M11.1.0"), ("America/Winnipeg", "CST6CDT,M3.2.0,M11.1.0"), ("America/Mexico_City", "CST6"),
+    ("America/Denver", "MST7MDT,M3.2.0,M11.1.0"), ("America/Edmonton", "MST7MDT,M3.2.0,M11.1.0"), ("America/Phoenix", "MST7"),
+    ("America/Los_Angeles", "PST8PDT,M3.2.0,M11.1.0"), ("America/Vancouver", "PST8PDT,M3.2.0,M11.1.0"), ("America/Anchorage", "AKST9AKDT,M3.2.0,M11.1.0"),
+    ("Pacific/Honolulu", "HST10"), ("America/Sao_Paulo", "<-03>3"), ("America/Argentina/Buenos_Aires", "<-03>3"), ("America/Bogota", "<-05>5"),
+    ("Europe/London", "GMT0BST,M3.5.0/1,M10.5.0"), ("Europe/Dublin", "GMT0IST,M3.5.0/1,M10.5.0"), ("Europe/Lisbon", "WET0WEST,M3.5.0/1,M10.5.0"),
+    ("Europe/Paris", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Berlin", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Madrid", "CET-1CEST,M3.5.0,M10.5.0/3"),
+    ("Europe/Rome", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Amsterdam", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Brussels", "CET-1CEST,M3.5.0,M10.5.0/3"),
+    ("Europe/Vienna", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Zurich", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Stockholm", "CET-1CEST,M3.5.0,M10.5.0/3"),
+    ("Europe/Oslo", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Copenhagen", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Prague", "CET-1CEST,M3.5.0,M10.5.0/3"),
+    ("Europe/Warsaw", "CET-1CEST,M3.5.0,M10.5.0/3"), ("Europe/Athens", "EET-2EEST,M3.5.0/3,M10.5.0/4"), ("Europe/Helsinki", "EET-2EEST,M3.5.0/3,M10.5.0/4"),
+    ("Europe/Kiev", "EET-2EEST,M3.5.0/3,M10.5.0/4"), ("Europe/Bucharest", "EET-2EEST,M3.5.0/3,M10.5.0/4"), ("Europe/Istanbul", "<+03>-3"), ("Europe/Moscow", "MSK-3"),
+    ("Asia/Dubai", "<+04>-4"), ("Asia/Kolkata", "IST-5:30"), ("Asia/Singapore", "<+08>-8"), ("Asia/Hong_Kong", "HKT-8"), ("Asia/Shanghai", "CST-8"),
+    ("Asia/Tokyo", "JST-9"), ("Asia/Seoul", "KST-9"), ("Australia/Sydney", "AEST-10AEDT,M10.1.0,M4.1.0/3"), ("Australia/Melbourne", "AEST-10AEDT,M10.1.0,M4.1.0/3"),
+    ("Australia/Brisbane", "AEST-10"), ("Australia/Perth", "AWST-8"), ("Pacific/Auckland", "NZST-12NZDT,M9.5.0,M4.1.0/3"), ("UTC", "UTC0"),
+];
+
+/// The local zone as a POSIX TZ string and where it came from: `tz=` in keys.conf, else a zone
+/// name the stock firmware cached, else the plain offset it keeps in tzVar (no daylight rule).
+fn detect_tz() -> Option<(String, &'static str)> {
+    if let Some(tz) = fs::read_to_string(format!("{DIR}/keys.conf")).ok().and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("tz=").map(|v| v.trim().to_string()))).filter(|v| !v.is_empty()) {
+        return Some((tz, "keys.conf"));
+    }
+    if let Ok(db) = fs::read("/var/local/system/TimeZoneCacheManager.db") {
+        let text = String::from_utf8_lossy(&db);
+        // the longest matching name wins, so America/Argentina/Buenos_Aires beats nothing shorter
+        if let Some((_, rule)) = ZONES.iter().filter(|(name, _)| text.contains(name)).max_by_key(|(name, _)| name.len()) {
+            return Some((rule.to_string(), "TimeZoneCacheManager.db"));
+        }
+    }
+    if let Ok(v) = fs::read_to_string("/var/local/system/tzVar") {
+        // KINDLE_TZ=GMT-06:00 means six hours behind UTC; POSIX writes that offset with the sign flipped
+        if let Some(off) = v.lines().find_map(|l| l.trim().strip_prefix("KINDLE_TZ=GMT")) {
+            let (sign, rest) = off.split_at(1);
+            let mut parts = rest.split(':');
+            if let (Some(h), m) = (parts.next().and_then(|h| h.parse::<u32>().ok()), parts.next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0)) {
+                let posix_sign = if sign == "-" { "" } else { "-" };
+                let tz = if m == 0 { format!("<{sign}{h:02}>{posix_sign}{h}") } else { format!("<{sign}{h:02}{m:02}>{posix_sign}{h}:{m:02}") };
+                return Some((tz, "tzVar"));
+            }
+        }
+    }
+    None
+}
+
 fn clock_hms() -> String {
     unsafe {
         let t = libc::time(std::ptr::null_mut());
@@ -251,10 +298,9 @@ fn main() -> Result<()> {
     fs::create_dir_all(DIR)?;
     // volumd kills anything holding /mnt/us busy before exporting it over USB: never sit there
     let _ = std::env::set_current_dir("/");
-    // the Kindle keeps its clock in UTC; `tz=` in keys.conf names the local zone (POSIX form,
-    // e.g. CST6CDT,M3.2.0,M11.1.0, works without zoneinfo files)
-    if let Some(tz) = fs::read_to_string(format!("{DIR}/keys.conf")).ok().and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("tz=").map(str::to_string))) {
-        std::env::set_var("TZ", tz.trim());
+    if let Some((tz, source)) = detect_tz() {
+        std::env::set_var("TZ", &tz);
+        log(&format!("timezone {tz} ({source})"));
     }
     log("eink-host starting");
     for prop in ["fsrkeypadEnable", "fsrkeypadPrevEnable", "fsrkeypadNextEnable"] {
@@ -1127,6 +1173,28 @@ fn debug_command(cmd: &str) -> String {
             },
             _ => "usage: :conf key=value".into(),
         },
+        c if c.starts_with("ls ") => {
+            // :ls <dir>   read-only listing, for finding where the stock firmware keeps things
+            match fs::read_dir(c[3..].trim()) {
+                Ok(rd) => {
+                    let mut names: Vec<String> = rd.flatten().map(|e| {
+                        let t = e.file_type().ok();
+                        let mark = if t.is_some_and(|t| t.is_dir()) { "/" } else if t.is_some_and(|t| t.is_symlink()) { "@" } else { "" };
+                        format!("{}{mark}", e.file_name().to_string_lossy())
+                    }).collect();
+                    names.sort();
+                    names.join(" ")
+                }
+                Err(e) => format!("ls: {e}"),
+            }
+        }
+        c if c.starts_with("cat ") => {
+            // :cat <file>   the first 2000 bytes of a text file, lossy
+            match fs::read(c[4..].trim()) {
+                Ok(b) => String::from_utf8_lossy(&b[..b.len().min(2000)]).replace('\n', " | "),
+                Err(e) => format!("cat: {e}"),
+            }
+        }
         "sshkey" => match repo::public_key() {
             Ok(k) => k,
             Err(e) => format!("no key: {e:#}"),
@@ -1152,7 +1220,7 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("sync failed: {e:#}"),
         },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file>".into(),
     }
 }
 
