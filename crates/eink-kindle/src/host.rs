@@ -232,7 +232,7 @@ fn paint(fb: &mut epdc::Epdc, scene: &Scene, damage: &[Damage]) {
             continue;
         }
         blit_ms += t.elapsed().as_millis();
-        if let Err(e) = fb.refresh(r.x as u32, r.y as u32, r.w as u32, r.h as u32, epdc::WAVEFORM_DU, full, full) {
+        if let Err(e) = fb.refresh(r.x as u32, r.y as u32, r.w as u32, r.h as u32, epdc::WAVEFORM_DU, full, false) {
             log(&format!("refresh failed: {e}"));
         }
     }
@@ -251,6 +251,11 @@ fn main() -> Result<()> {
     fs::create_dir_all(DIR)?;
     // volumd kills anything holding /mnt/us busy before exporting it over USB: never sit there
     let _ = std::env::set_current_dir("/");
+    // the Kindle keeps its clock in UTC; `tz=` in keys.conf names the local zone (POSIX form,
+    // e.g. CST6CDT,M3.2.0,M11.1.0, works without zoneinfo files)
+    if let Some(tz) = fs::read_to_string(format!("{DIR}/keys.conf")).ok().and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("tz=").map(str::to_string))) {
+        std::env::set_var("TZ", tz.trim());
+    }
     log("eink-host starting");
     for prop in ["fsrkeypadEnable", "fsrkeypadPrevEnable", "fsrkeypadNextEnable"] {
         lipc_set("com.lab126.deviced", prop, "1");
@@ -267,6 +272,8 @@ fn main() -> Result<()> {
         set_error(&mut fb.borrow_mut(), &e);
     }
     let scene = Rc::new(RefCell::new(Scene::new()));
+    // ghosting is cleared before every sleep, so a flash never interrupts a tap
+    scene.borrow_mut().set_full_every(u32::MAX);
     input::start(tx.clone());
     {
         let tx = tx.clone();
@@ -1112,6 +1119,14 @@ fn debug_command(cmd: &str) -> String {
             let start = lines.len().saturating_sub(n);
             lines[start..].join(" | ")
         }
+        c if c.starts_with("conf ") => match c[5..].trim().split_once('=') {
+            // :conf key=value   writes keys.conf (tz=, update_url=, repo_url=, repo_branch=); restart to apply
+            Some((k, v)) if !k.trim().is_empty() => match repo::set_conf(k.trim(), v.trim()) {
+                Ok(()) => format!("{}={} (restart to apply)", k.trim(), v.trim()),
+                Err(e) => format!("could not write keys.conf: {e}"),
+            },
+            _ => "usage: :conf key=value".into(),
+        },
         "sshkey" => match repo::public_key() {
             Ok(k) => k,
             Err(e) => format!("no key: {e:#}"),
@@ -1137,7 +1152,7 @@ fn debug_command(cmd: &str) -> String {
             Err(e) => format!("sync failed: {e:#}"),
         },
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n]".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value".into(),
     }
 }
 

@@ -352,6 +352,12 @@ impl Scene {
         }
     }
 
+    /// How many partial updates may accumulate before the next commit becomes a full flash.
+    /// A host that clears ghosting on its own schedule passes `u32::MAX`.
+    pub fn set_full_every(&mut self, n: u32) {
+        self.full_every = n;
+    }
+
     /// Partial updates since the last full flash.
     pub fn partials_since_full(&self) -> u32 {
         self.partials
