@@ -117,12 +117,18 @@ const hostConfig: Config = {
   finalizeInitialChildren: () => false,
 
   prepareUpdate(_inst, type, oldProps, newProps) {
-    return diffProps(type, oldProps, newProps);
+    const diff = diffProps(type, oldProps, newProps);
+    // A changed handler paints nothing, but the instance must still learn about it: otherwise a
+    // row whose look did not change keeps calling a closure over stale state.
+    if (diff === null && oldProps.onTap !== newProps.onTap) return {};
+    return diff;
   },
 
   commitUpdate(inst, updatePayload, _type, _oldProps, newProps) {
     inst.props = newProps;
-    if (updatePayload) eink().set_props(inst.id, JSON.stringify(updatePayload));
+    if (updatePayload && Object.keys(updatePayload).length > 0) {
+      eink().set_props(inst.id, JSON.stringify(updatePayload));
+    }
   },
 
   commitTextUpdate(inst, _old, newText) {
