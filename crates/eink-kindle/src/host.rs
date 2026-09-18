@@ -102,6 +102,11 @@ fn auto_light_step(current: &mut u32) -> Option<u32> {
     if frontlight_setting() != "auto" {
         return None;
     }
+    // `:light off|n` and the stock software move the light behind this loop's back; after
+    // `:light auto` the stale value made the ramp think it had arrived and the light stayed dark
+    if let Some(level) = fs::read_to_string(FRONTLIGHT).ok().and_then(|v| v.trim().parse().ok()) {
+        *current = level;
+    }
     let lux = ambient_lux()?;
     let target = light_for(lux);
     let diff = target.abs_diff(*current);
