@@ -42,7 +42,7 @@ What you get on connect:
   | `:slow ms` | log every input event slower than `ms` (default 80; `:slow 1` logs them all) |
   | `:log [n]` | the last `n` lines of host.log |
   | `:conf key=value` | set a keys.conf entry: `repo_url`, `repo_branch`, `github_token`, `update_url` (values are never echoed) |
-  | `:manifest`, `:set section.key=value` | show the device's settings; change one and commit it (see "manifest.json") |
+  | `:settings`, `:set section.key=value` | show the app entry and the settings in force; change one and commit it (see "package.json") |
   | `:ls dir`, `:cat file`, `:strings file` | read-only looks at the device's filesystem |
   | `:theme dark\|light` | pixel inversion |
   | `:light [auto\|off\|dark [level [lux]]\|0-24\|learn 0-24\|nightlight on\|off]` | the frontlight, on the Kindle's own 0 to 24 scale; see "Frontlight" below |
@@ -52,21 +52,25 @@ What you get on connect:
   manager reboots the device after a few seconds.) If the download fails the host runs the cached
   copy and shows the error badge.
 
-## manifest.json: the device's settings
+## package.json: the app and its settings
 
-Every setting of the device that is not an address or a secret lives in `manifest.json` at the
-root of the synced repository, so it travels with the app, agents can change it with a commit,
-and the debug port's setters (`:light`, `:theme`, `:ssh`, `:set`) write it back and commit it
-like a tick. keys.conf on the device keeps only what is needed to reach the repository:
-`repo_url`, `repo_branch`, `github_token`, `update_url`. The whole file, with the defaults:
+The synced repository's `package.json` describes the app the device runs: `main` is the bundle
+(`dist/app.js` by default) and the `eink` section holds every setting that is not an address
+or a secret, so settings travel with the app and agents change them with a commit. keys.conf on
+the device keeps only what is needed to reach the repository: `repo_url`, `repo_branch`,
+`github_token`, `update_url`.
 
 ```json
 {
-  "app":     { "home": "days/" },
-  "display": { "theme": "light", "frontlight": "auto", "dark_lux": 15, "dark_level": 8 },
-  "clock":   { "tz": "auto" },
-  "ssh":     { "enabled": true, "users": ["<owner of repo_url>"] },
-  "power":   { "stages": [ ...see below... ] }
+  "name": "kindle",
+  "main": "dist/app.js",
+  "eink": {
+    "app":     { "home": "data/" },
+    "display": { "theme": "light", "frontlight": "auto", "dark_lux": 15, "dark_level": 8 },
+    "clock":   { "tz": "auto" },
+    "ssh":     { "enabled": true, "users": ["<owner of repo_url>"] },
+    "power":   { "stages": [ ...see below... ] }
+  }
 }
 ```
 
@@ -80,13 +84,20 @@ like a tick. keys.conf on the device keeps only what is needed to reach the repo
 | `ssh.enabled`, `ssh.users` | the SSH server and the GitHub accounts whose keys may log in |
 | `power.stages` | the power policy, next section |
 
+**`data/` is the only folder the device writes.** The app's files live there (the reader's
+notes), and so does `data/settings.json`: what the debug port's setters (`:light`, `:theme`,
+`:ssh`, `:set`) change, merged over the `eink` section key by key and committed like a tick.
+The host refuses to write or commit anything else, so the device can never corrupt the app it
+runs; `package.json`, `dist/` and `bin/` only ever flow from the repository to the device.
+
 A committed change applies at the next pull (5 minutes awake, every RTC wake asleep, or
-`:sync`). `:manifest` prints the file as the device sees it; `:set display.theme=dark` writes
-one key (numbers, booleans and JSON lists parse as JSON, anything else is a string).
+`:sync`). `:settings` prints the app entry and the settings in force; `:set display.theme=dark`
+writes one key to `data/settings.json` (numbers, booleans and JSON lists parse as JSON,
+anything else is a string).
 
 ## Power policy
 
-What stays on, and for how long, is the `power.stages` list in the manifest. Time without interaction (a tap, a page button, the power button; not SSH or
+What stays on, and for how long, is the `power.stages` list in the settings. Time without interaction (a tap, a page button, the power button; not SSH or
 the debug port, though `:tap` counts) moves the device down the list; any interaction puts it
 back at the first stage at once. The default, used when the file or its `power` section is
 missing:
@@ -117,7 +128,7 @@ missing:
 - `suspend: true` sleeps the device (everything off) and wakes it every `wake_every_minutes` for
   a pull, which is how a new bundle, host or policy still arrives. On a charger the suspend stage
   is skipped and the device stays in the stage before it.
-- A change to `manifest.json` takes effect at the next pull. `:power` on the debug port shows the
+- A change to the settings takes effect at the next pull. `:power` on the debug port shows the
   stage in force, the time without interaction, and the policy as parsed. Unknown function names
   are logged and ignored; a broken file falls back to the default.
 
@@ -133,7 +144,7 @@ current light bucket, and Nightlight, which dims slowly in the dark. The host on
 whether the light may be on (the power policy) and which mode applies, through its `flAuto`,
 `flIntensity` and `alsNightlightEn` properties.
 
-- `display.frontlight` in the manifest: `auto` (default), `off`, `dark`, or a fixed level `0` to
+- `display.frontlight` in the settings: `auto` (default), `off`, `dark`, or a fixed level `0` to
   `24` on the scale of the settings slider. `:light` shows what powerd is doing: mode, level, raw
   PWM, Nightlight, lux.
 - `dark` keeps the light off unless the room is really dark: on at `dark_level` (default 8) below
@@ -165,7 +176,7 @@ can push to the repository can also log in, and a key removed on GitHub stops wo
 next refresh (at start and every 15 minutes while awake, or `:ssh refresh`). Every listed
 account must answer for the file to be rewritten, so a flaky network never revokes anything.
 
-In the manifest:
+In the settings:
 
 | key | meaning |
 |---|---|
@@ -258,7 +269,8 @@ seconds later; pulls happen at start, on every wake, every five minutes while aw
    store; the host installs them into `/var/local/eink-ui/bin`.
 2. `:repo git@github.com:you/notes.git`, then `:sshkey`, and add that key to the repository as a
    deploy key with write access.
-3. `:sync`. Markdown files under `days/` make the reader app take over from the JSON todo list.
+3. `:sync`. Markdown files under `data/` (the folder named by `app.home`) are what the reader
+   shows; the device writes nothing outside `data/`.
 
 A conflict on pull (an agent changed the line you just ticked) keeps the remote version and
 drops the device's commit; the next tap redoes it. If `dist/app.js` or `bin/eink-host` is

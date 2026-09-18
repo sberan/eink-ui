@@ -1,4 +1,4 @@
-//! Power policy: `manifest.json` at the root of the synced repository lists stages the device
+//! Power policy: `power.stages` in the settings (the `eink` section of package.json) lists stages the device
 //! moves through as time passes without interaction, each naming the functions that stay on.
 //! A stage with `suspend` sleeps the device, waking every `wake_every_minutes` to pull.
 //!
@@ -66,26 +66,25 @@ pub fn defaults() -> Vec<Stage> {
     ]
 }
 
-/// The policy in `manifest.json`, or the defaults when the file is missing or broken.
-pub fn load(repo: &str) -> Vec<Stage> {
-    let path = format!("{repo}/manifest.json");
-    let text = match fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return defaults(),
-    };
-    match parse(&text) {
+/// The `power.stages` of the settings in force, or the defaults when absent or broken.
+pub fn load() -> Vec<Stage> {
+    match from_value(&crate::manifest::read()) {
         Ok(Some(stages)) => stages,
         Ok(None) => defaults(),
         Err(e) => {
-            log(&format!("manifest.json: {e}; using the default power policy"));
+            log(&format!("power policy: {e}; using the default"));
             defaults()
         }
     }
 }
 
-/// `Ok(None)` when the manifest has no power section.
+/// `Ok(None)` when the text has no power section.
 pub fn parse(text: &str) -> Result<Option<Vec<Stage>>, String> {
     let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    from_value(&v)
+}
+
+pub fn from_value(v: &serde_json::Value) -> Result<Option<Vec<Stage>>, String> {
     let Some(list) = v.get("power").and_then(|p| p.get("stages")) else { return Ok(None) };
     let list = list.as_array().ok_or("power.stages must be a list")?;
     if list.is_empty() {
@@ -110,7 +109,7 @@ pub fn parse(text: &str) -> Result<Option<Vec<Stage>>, String> {
                     Some("wifi") => functions.wifi = true,
                     Some("sync") => functions.sync = true,
                     Some("haptics") => functions.haptics = true,
-                    other => log(&format!("manifest.json: stage '{name}' names an unknown function {other:?}; known: {}", NAMES.join(", "))),
+                    other => log(&format!("power policy: stage '{name}' names an unknown function {other:?}; known: {}", NAMES.join(", "))),
                 }
             }
         }
@@ -122,7 +121,7 @@ pub fn parse(text: &str) -> Result<Option<Vec<Stage>>, String> {
             .unwrap_or(DEFAULT_WAKE);
         stages.push(Stage { name, minutes, functions, suspend, wake_every });
         if minutes.is_none() && i + 1 < list.len() {
-            log(&format!("manifest.json: stage '{}' has no minutes, so the stages after it are never reached", stages.last().map(|s| s.name.as_str()).unwrap_or("")));
+            log(&format!("power policy: stage '{}' has no minutes, so the stages after it are never reached", stages.last().map(|s| s.name.as_str()).unwrap_or("")));
             break;
         }
     }
@@ -181,9 +180,9 @@ pub fn apply(from: Functions, to: Functions, governor: &mut Option<String>) {
     }
     if from.cpu != to.cpu {
         if to.cpu {
-            if let Some(g) = governor.take() {
-                let _ = fs::write(format!("{CPUFREQ}/scaling_governor"), format!("{g}\n"));
-            }
+            // no remembered governor after a host restart in a slow stage: the Kindle's default
+            let g = governor.take().unwrap_or_else(|| "ondemand".to_string());
+            let _ = fs::write(format!("{CPUFREQ}/scaling_governor"), format!("{g}\n"));
         } else {
             if let Ok(g) = fs::read_to_string(format!("{CPUFREQ}/scaling_governor")) {
                 *governor = Some(g.trim().to_string());

@@ -29,7 +29,7 @@ function Page({ path, onToggleTask }: PageProps) {
 }
 
 /** Markdown files from the synced repository: page buttons move between files, taps tick tasks. */
-export function ReaderApp({ folder = 'days/' }: ReaderAppProps) {
+export function ReaderApp({ folder = 'data/' }: ReaderAppProps) {
   const files = useFiles(folder, '.md');
   const [remembered, setRemembered] = useStoredState<string>('reader:path', '');
   const path = files.includes(remembered) ? remembered : (files[files.length - 1] ?? null);

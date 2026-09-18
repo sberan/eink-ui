@@ -65,7 +65,7 @@ describe('reader app over the mock repository', () => {
     await tick();
     expect(h.host.writes).toHaveLength(1);
     const [path, text] = h.host.writes[0]!;
-    expect(path).toBe('days/2026-09-16.md');
+    expect(path).toBe('data/2026-09-16.md');
     expect(text).toContain('- [x] Post the return label');
     expect(text.split('\n').length).toBe(SAMPLE_FILES[path]!.split('\n').length);
   });
@@ -108,8 +108,8 @@ describe('reader app over the mock repository', () => {
   it('re-reads a file when the host reports a pull', async () => {
     const { ReaderApp } = await import('../apps/reader/index.js');
     h.renderer.render(<ReaderApp />);
-    h.host.files.set('days/2026-09-16.md', '# Wednesday, September 16\n- [ ] Something new\n');
-    h.mock.emit({ type: 'files', changed: ['days/2026-09-16.md'] });
+    h.host.files.set('data/2026-09-16.md', '# Wednesday, September 16\n- [ ] Something new\n');
+    h.mock.emit({ type: 'files', changed: ['data/2026-09-16.md'] });
     await tick();
     expect(h.hasText('Something new')).toBe(true);
   });

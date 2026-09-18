@@ -1,6 +1,6 @@
 /** A small repository for hosts without a real one: the simulator, tests and snapshots. */
 export const SAMPLE_FILES: Readonly<Record<string, string>> = {
-  'days/2026-09-15.md': `# Tuesday, September 15
+  'data/2026-09-15.md': `# Tuesday, September 15
 
 ## Morning
 - [x] Coffee and read the overnight alerts
@@ -17,7 +17,7 @@ export const SAMPLE_FILES: Readonly<Record<string, string>> = {
 - [ ] Call Mum
 - [ ] Thirty pages of the Vonnegut
 `,
-  'days/2026-09-16.md': `# Wednesday, September 16
+  'data/2026-09-16.md': `# Wednesday, September 16
 
 - [ ] Battery drain measurement overnight
 - [ ] Post the return label
@@ -38,16 +38,20 @@ show their text, and anything the panel cannot draw is left out.
 
 Tap the title to add a task.
 `,
-  'manifest.json': `{
-  "app": { "home": "days/" },
-  "display": { "theme": "light", "frontlight": "auto", "dark_lux": 15, "dark_level": 8 },
-  "clock": { "tz": "auto" },
-  "ssh": { "enabled": true, "users": ["sberan"] },
-  "power": { "stages": [
-    { "name": "on", "minutes": 10, "functions": ["frontlight", "cpu", "wifi", "sync", "haptics"] },
-    { "name": "low power", "minutes": 50, "functions": ["wifi", "sync"] },
-    { "name": "sleep", "suspend": true, "wake_every_minutes": 30 }
-  ] }
+  'package.json': `{
+  "name": "sample",
+  "main": "dist/app.js",
+  "eink": {
+    "app": { "home": "data/" },
+    "display": { "theme": "light", "frontlight": "auto", "dark_lux": 15, "dark_level": 8 },
+    "clock": { "tz": "auto" },
+    "ssh": { "enabled": true, "users": ["sberan"] },
+    "power": { "stages": [
+      { "name": "on", "minutes": 10, "functions": ["frontlight", "cpu", "wifi", "sync", "haptics"] },
+      { "name": "low power", "minutes": 50, "functions": ["wifi", "sync"] },
+      { "name": "sleep", "suspend": true, "wake_every_minutes": 30 }
+    ] }
+  }
 }
 `,
 };

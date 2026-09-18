@@ -262,7 +262,7 @@ const ZONES: &[(&str, &str)] = &[
 fn detect_tz() -> Option<(String, &'static str)> {
     let tz = manifest::string(&["clock", "tz"], "auto");
     if !tz.is_empty() && tz != "auto" {
-        return Some((tz, "manifest.json"));
+        return Some((tz, "settings"));
     }
     if let Ok(db) = fs::read("/var/local/system/TimeZoneCacheManager.db") {
         let text = String::from_utf8_lossy(&db);
@@ -728,7 +728,7 @@ fn main() -> Result<()> {
     let mut last_input = Instant::now();
     let mut last_sync = Instant::now();
     let sync_tx = tx.clone();
-    let mut stages = power::load(repo::REPO);
+    let mut stages = power::load();
     log(&format!("power policy: {}", power::describe(&stages)));
     let mut functions = power::ALL_ON;
     frontlight_apply(true);
@@ -844,8 +844,8 @@ fn main() -> Result<()> {
                 None
             }
             Ok(Event::Files(changed)) => {
-                if changed.iter().any(|p| p == "manifest.json") {
-                    stages = power::load(repo::REPO);
+                if changed.iter().any(|p| p == manifest::PACKAGE || p == manifest::OVERRIDES) {
+                    stages = power::load();
                     log(&format!("power policy: {}", power::describe(&stages)));
                     if apply_theme() {
                         if let Some(mtx) = MAIN_TX.lock().ok().and_then(|g| g.clone()) {
@@ -858,8 +858,9 @@ fn main() -> Result<()> {
                 // a bundle or host committed to the repository wins over the store's copy; the
                 // bundle is copied first so a host restart already finds it
                 let mut restart = false;
-                if changed.iter().any(|p| p == "dist/app.js") {
-                    if let Ok(b) = fs::read(format!("{}/dist/app.js", repo::REPO)) {
+                let entry = manifest::app_entry();
+                if changed.iter().any(|p| *p == entry || p == manifest::PACKAGE) {
+                    if let Ok(b) = fs::read(format!("{}/{entry}", repo::REPO)) {
                         restart |= fs::write(format!("{DIR}/app.js"), &b).is_ok();
                     }
                 }
@@ -973,8 +974,8 @@ fn main() -> Result<()> {
             deliver(&ctx, &rt, &listeners, &fb, r#"{"type":"power","state":"wake"}"#);
             for ev in deferred {
                 if let Event::Files(c) = &ev {
-                    if c.iter().any(|p| p == "manifest.json") {
-                        stages = power::load(repo::REPO);
+                    if c.iter().any(|p| p == manifest::PACKAGE || p == manifest::OVERRIDES) {
+                        stages = power::load();
                         log(&format!("power policy: {}", power::describe(&stages)));
                     }
                 }
@@ -1423,9 +1424,13 @@ fn debug_command(cmd: &str) -> String {
             },
             _ => "usage: :conf key=value".into(),
         },
-        "manifest" => serde_json::to_string_pretty(&manifest::read()).unwrap_or_default(),
+        "settings" | "manifest" => format!(
+            "app: {} (package.json main); settings in force:\n{}",
+            manifest::app_entry(),
+            serde_json::to_string_pretty(&manifest::read()).unwrap_or_default()
+        ),
         c if c.starts_with("set ") => match c[4..].trim().split_once('=') {
-            // :set display.theme=dark   writes the manifest and commits it; applies at the next pull
+            // :set display.theme=dark   writes data/settings.json and commits it; applies at the next pull
             Some((k, v)) if !k.trim().is_empty() => match manifest::set_from_text(k.trim(), v) {
                 Ok(s) => format!("{s}; applies when the pull lands (`:sync`)"),
                 Err(e) => format!("could not write the manifest: {e}"),
@@ -1573,9 +1578,9 @@ fn debug_command(cmd: &str) -> String {
             }
             Err(e) => format!("sync failed: {e:#}"),
         },
-        "power" => power::status(&power::load(repo::REPO)),
+        "power" => power::status(&power::load()),
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :ssh [refresh|on|off|users a,b] :power :manifest :set section.key=value :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :ssh [refresh|on|off|users a,b] :power :settings :set section.key=value :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
     }
 }
 
@@ -1650,9 +1655,10 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd
         while let Ok(ev) = rx.recv_timeout(window.saturating_duration_since(Instant::now())) {
             match ev {
                 Event::Files(changed) => {
-                    if changed.iter().any(|p| p == "dist/app.js" || p == "bin/eink-host") {
+                    let entry = manifest::app_entry();
+                    if changed.iter().any(|p| *p == entry || p == manifest::PACKAGE || p == "bin/eink-host") {
                         log("repo changed the bundle or host while asleep: installing");
-                        if let Ok(b) = fs::read(format!("{}/dist/app.js", repo::REPO)) {
+                        if let Ok(b) = fs::read(format!("{}/{entry}", repo::REPO)) {
                             let _ = fs::write(format!("{DIR}/app.js"), &b);
                         }
                         if let Ok(b) = fs::read(format!("{}/bin/eink-host", repo::REPO)) {

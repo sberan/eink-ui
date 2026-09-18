@@ -1,20 +1,26 @@
-//! `manifest.json` at the root of the synced repository holds every setting of the device that
-//! is not an address or a secret (those stay in keys.conf): `display`, `clock`, `ssh`, `power`,
-//! and whatever the app keeps under `app`. It is read on start and after every pull. The debug
-//! port's setters write it back through the repository worker, so a change made on the device
-//! is committed like a tick, and a change committed by anyone else applies at the next pull.
+//! The device's settings come from the repository's `package.json`: `main` names the app it
+//! runs and the `eink` section holds display, clock, ssh, power and the app's own keys. That
+//! file is read-only on the device. What is changed from the device (`:light`, `:theme`, `:ssh`,
+//! `:set`) goes to `data/settings.json`, merged over the `eink` section key by key, because
+//! `data/` is the only folder the device writes: it can never corrupt the app it runs.
 use crate::log;
 use crate::repo::{self, REPO};
 use serde_json::{json, Value};
 use std::fs;
 
-pub const FILE: &str = "manifest.json";
+pub const PACKAGE: &str = "package.json";
+pub const OVERRIDES: &str = "data/settings.json";
+const DEFAULT_ENTRY: &str = "dist/app.js";
 
-/// The manifest as an object; `{}` when the file is missing or broken (which is logged).
-pub fn read() -> Value {
-    match fs::read_to_string(format!("{REPO}/{FILE}")) {
+/// The only place the device writes: the app's data and its own setting changes.
+pub fn is_writable(rel: &str) -> bool {
+    rel.starts_with("data/") && !rel.split('/').any(|s| s == "..")
+}
+
+fn read_object(rel: &str) -> Value {
+    match fs::read_to_string(format!("{REPO}/{rel}")) {
         Ok(text) => parse(&text).unwrap_or_else(|e| {
-            log(&format!("{FILE}: {e}; using defaults"));
+            log(&format!("{rel}: {e}; ignored"));
             json!({})
         }),
         Err(_) => json!({}),
@@ -23,7 +29,49 @@ pub fn read() -> Value {
 
 pub fn parse(text: &str) -> Result<Value, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    if v.is_object() { Ok(v) } else { Err("the manifest must be a JSON object".into()) }
+    if v.is_object() { Ok(v) } else { Err("must be a JSON object".into()) }
+}
+
+/// `main` of package.json: the bundle the device runs, relative to the repository.
+pub fn app_entry() -> String {
+    read_object(PACKAGE)
+        .get("main")
+        .and_then(|m| m.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && is_safe(s))
+        .map(str::to_string)
+        .unwrap_or_else(|| DEFAULT_ENTRY.to_string())
+}
+
+fn is_safe(rel: &str) -> bool {
+    !rel.starts_with('/') && !rel.split('/').any(|s| s == "..")
+}
+
+/// Objects merge key by key, anything else on the right replaces the left.
+pub fn merge(mut base: Value, over: Value) -> Value {
+    match (base.as_object_mut(), over) {
+        (Some(b), Value::Object(o)) => {
+            for (k, v) in o {
+                match b.get_mut(&k) {
+                    Some(bv) if bv.is_object() && v.is_object() => {
+                        let merged = merge(bv.take(), v);
+                        *bv = merged;
+                    }
+                    _ => {
+                        b.insert(k, v);
+                    }
+                }
+            }
+            base
+        }
+        (_, over) => over,
+    }
+}
+
+/// The settings in force: package.json's `eink` section under data/settings.json.
+pub fn read() -> Value {
+    let base = read_object(PACKAGE).get("eink").cloned().filter(|v| v.is_object()).unwrap_or_else(|| json!({}));
+    merge(base, read_object(OVERRIDES))
 }
 
 pub fn get(path: &[&str]) -> Option<Value> {
@@ -51,27 +99,31 @@ pub fn list(path: &[&str]) -> Option<Vec<String>> {
     get(path)?.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
 }
 
-/// One setting written into the file, pretty-printed, and handed to the repository worker,
-/// which commits it a few seconds later like any other write.
+/// One setting written into data/settings.json, pretty-printed, and handed to the repository
+/// worker, which commits it a few seconds later like any other write.
 pub fn set(path: &[&str], value: Value) -> Result<String, String> {
     let Some((last, parents)) = path.split_last() else { return Err("empty setting name".into()) };
-    let mut root = read();
+    let mut root = read_object(OVERRIDES);
     let text = {
         let mut cur = &mut root;
         for k in parents {
             if !cur.get(*k).is_some_and(|v| v.is_object()) {
                 cur[*k] = json!({});
             }
-            cur = cur.get_mut(*k).ok_or("manifest path")?;
+            cur = cur.get_mut(*k).ok_or("settings path")?;
         }
         cur[*last] = value.clone();
         serde_json::to_string_pretty(&root).map_err(|e| e.to_string())? + "\n"
     };
     // written here, so the caller can read the new value at once; the worker commits it
-    fs::write(format!("{REPO}/{FILE}"), &text).map_err(|e| format!("{FILE}: {e}"))?;
+    let full = format!("{REPO}/{OVERRIDES}");
+    if let Some(dir) = std::path::Path::new(&full).parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    fs::write(&full, &text).map_err(|e| format!("{OVERRIDES}: {e}"))?;
     let cmd = crate::REPO_CMD.lock().ok().and_then(|g| g.clone()).ok_or("the repository worker is not running")?;
-    cmd.send(repo::SyncCmd::Commit(FILE.to_string())).map_err(|e| e.to_string())?;
-    Ok(format!("{} = {value} (committed with the next push)", path.join(".")))
+    cmd.send(repo::SyncCmd::Commit(OVERRIDES.to_string())).map_err(|e| e.to_string())?;
+    Ok(format!("{} = {value} (in {OVERRIDES}, committed with the next push)", path.join(".")))
 }
 
 /// `:set a.b.c=value`: JSON when it parses (numbers, booleans, null, arrays, objects), else a string.
@@ -86,19 +138,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_objects_are_manifests() {
-        assert!(parse("{\"display\": {\"theme\": \"dark\"}}").is_ok());
-        assert!(parse("[1, 2]").is_err());
-        assert!(parse("nope").is_err());
+    fn overrides_merge_key_by_key() {
+        let base = json!({"display": {"theme": "light", "frontlight": "auto"}, "ssh": {"enabled": true}});
+        let over = json!({"display": {"frontlight": "dark"}, "clock": {"tz": "UTC0"}});
+        let m = merge(base, over);
+        assert_eq!(m["display"]["theme"], "light");
+        assert_eq!(m["display"]["frontlight"], "dark");
+        assert_eq!(m["ssh"]["enabled"], true);
+        assert_eq!(m["clock"]["tz"], "UTC0");
+        assert_eq!(merge(json!({"a": 1}), json!({"a": {"b": 2}}))["a"]["b"], 2);
     }
 
     #[test]
-    fn values_parse_as_json_then_string() {
-        let as_value = |raw: &str| serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
-        assert_eq!(as_value("15"), json!(15));
-        assert_eq!(as_value("true"), json!(true));
-        assert_eq!(as_value("[\"a\", \"b\"]"), json!(["a", "b"]));
-        assert_eq!(as_value("America/Chicago"), json!("America/Chicago"));
-        assert_eq!(as_value("dark"), json!("dark"));
+    fn only_data_is_writable() {
+        assert!(is_writable("data/2026-09-17.md"));
+        assert!(is_writable("data/settings.json"));
+        assert!(!is_writable("package.json"));
+        assert!(!is_writable("dist/app.js"));
+        assert!(!is_writable("data/../package.json"));
+        assert!(!is_writable("datafile"));
+    }
+
+    #[test]
+    fn only_objects_are_settings() {
+        assert!(parse("{\"eink\": {}}").is_ok());
+        assert!(parse("[1, 2]").is_err());
+        assert!(parse("nope").is_err());
     }
 }

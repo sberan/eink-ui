@@ -97,41 +97,61 @@ export function useSync(): SyncState {
   return useSyncExternalStore(subscribe, () => syncState());
 }
 
-/** The device's settings: `manifest.json` at the root of the repository (docs/DEBUGGING.md). */
-export type Manifest = Readonly<Record<string, unknown>>;
+/**
+ * The device's settings: the `eink` section of the repository's `package.json`, with
+ * `data/settings.json` (what was changed from the device) merged over it key by key. See
+ * docs/DEBUGGING.md.
+ */
+export type Settings = Readonly<Record<string, unknown>>;
 
-const EMPTY_MANIFEST: Manifest = Object.freeze({});
-let manifestText: string | null | undefined;
-let manifestValue: Manifest = EMPTY_MANIFEST;
+const EMPTY_SETTINGS: Settings = Object.freeze({});
+let settingsKey: string | undefined;
+let settingsValue: Settings = EMPTY_SETTINGS;
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-/** Parsed once per text, so the snapshot stays the same object until a pull changes the file. */
-export function readManifest(): Manifest {
-  const text = readFile('manifest.json');
-  if (text !== manifestText) {
-    manifestText = text;
-    let parsed: unknown = {};
-    try {
-      parsed = text === null ? {} : JSON.parse(text);
-    } catch {
-      parsed = {};
-    }
-    manifestValue = isObject(parsed) ? parsed : EMPTY_MANIFEST;
+function parseObject(text: string | null): Record<string, unknown> {
+  if (text === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isObject(parsed) ? parsed : {};
+  } catch {
+    return {};
   }
-  return manifestValue;
 }
 
-export function useManifest(): Manifest {
-  return useSyncExternalStore(subscribe, readManifest);
+/** Objects merge key by key; anything else on the right replaces the left. */
+export function mergeSettings(base: unknown, over: unknown): unknown {
+  if (!isObject(base) || !isObject(over)) return over;
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(over)) out[k] = mergeSettings(base[k], v);
+  return out;
 }
 
-/** One section of the manifest as an object, `{}` when absent: `manifestSection(m, 'app')`. */
-export function manifestSection(m: Manifest, key: string): Readonly<Record<string, unknown>> {
-  const v = m[key];
-  return isObject(v) ? v : EMPTY_MANIFEST;
+/** Parsed once per pair of texts, so the snapshot stays the same object until a pull changes them. */
+export function readSettings(): Settings {
+  const pkg = readFile('package.json');
+  const over = readFile('data/settings.json');
+  const key = `${pkg ?? ''}\0${over ?? ''}`;
+  if (key !== settingsKey) {
+    settingsKey = key;
+    const base = parseObject(pkg)['eink'];
+    const merged = mergeSettings(isObject(base) ? base : {}, parseObject(over));
+    settingsValue = isObject(merged) ? merged : EMPTY_SETTINGS;
+  }
+  return settingsValue;
+}
+
+export function useSettings(): Settings {
+  return useSyncExternalStore(subscribe, readSettings);
+}
+
+/** One section of the settings as an object, `{}` when absent: `settingsSection(s, 'app')`. */
+export function settingsSection(s: Settings, key: string): Readonly<Record<string, unknown>> {
+  const v = s[key];
+  return isObject(v) ? v : EMPTY_SETTINGS;
 }
 
 /** Tests and the simulator reset the module between hosts. */
@@ -140,6 +160,6 @@ export function resetFiles(): void {
   lists.clear();
   sync = NO_SYNC;
   syncRead = false;
-  manifestText = undefined;
-  manifestValue = EMPTY_MANIFEST;
+  settingsKey = undefined;
+  settingsValue = EMPTY_SETTINGS;
 }

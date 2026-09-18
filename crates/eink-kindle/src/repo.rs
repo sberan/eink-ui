@@ -212,6 +212,10 @@ pub fn read_file(rel: &str) -> Option<String> {
 }
 
 pub fn write_file(rel: &str, text: &str) -> Result<()> {
+    // the device may change nothing but its data, so it can never corrupt the app it runs
+    if !crate::manifest::is_writable(rel) {
+        anyhow::bail!("refusing to write {rel}: only data/ is writable on the device");
+    }
     let p = safe_path(rel).context("bad path")?;
     if let Some(dir) = p.parent() {
         fs::create_dir_all(dir)?;
@@ -480,6 +484,10 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                 }
                 Some(SyncCmd::Commit(path)) => {
                     // the file is already on disk; the network runs once the user pauses
+                    if !crate::manifest::is_writable(&path) {
+                        log(&format!("refusing to commit {path}: only data/ is writable on the device"));
+                        continue;
+                    }
                     dirty.insert(path);
                     commit_due = Some(Instant::now() + COMMIT_QUIET);
                 }
