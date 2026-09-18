@@ -189,11 +189,11 @@ async function dev() {
   // calls inside the app are redirected to the simulator's page slot
   const appPath = path.join(cwd, entry).replace(/\\/g, '/');
   const devEntry = path.join(work, 'entry.tsx');
-  fs.writeFileSync(devEntry, `import React from 'react';
-import { bootSim } from 'eink-ui/sim';
+  fs.writeFileSync(devEntry, `import { bootSim } from 'eink-ui/sim';
 import { captureApp } from 'eink-ui/renderer';
-const app = captureApp(() => import(${JSON.stringify(appPath)}));
-bootSim({ app, appName: ${JSON.stringify(pkg.name ?? 'app')} });
+captureApp(() => import(${JSON.stringify(appPath)})).then((app) => {
+  bootSim({ app, appName: ${JSON.stringify(pkg.name ?? 'app')} });
+}, (err) => { console.error('eink-ui dev: the app failed to load', err); });
 `);
   const ctx = await context({
     entryPoints: [devEntry],

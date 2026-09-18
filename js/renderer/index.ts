@@ -1,6 +1,6 @@
 import Reconciler from 'react-reconciler';
 import { DefaultEventPriority, LegacyRoot } from 'react-reconciler/constants.js';
-import { Fragment, createElement, useEffect, useState } from 'react';
+import { Fragment, createElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type {
   EinkHost, EinkInputEvent, EinkProps, NodeId, Unsubscribe,
@@ -241,25 +241,19 @@ let capturing: ((element: ReactNode) => void) | null = null;
 /**
  * For the simulator: loads an app module and hands back what it passed to `render()` as a
  * component, so the app becomes a page of the simulator instead of taking the panel. The
- * import is dynamic so the module runs after the capture is armed.
+ * import is dynamic so the module runs while the capture is armed; the capture ends when the
+ * module has loaded, so the simulator's own render() calls afterwards are ordinary.
  */
-export function captureApp(load: () => Promise<unknown>): () => ReactElement {
+export async function captureApp(load: () => Promise<unknown>): Promise<() => ReactElement> {
   let captured: ReactNode = null;
-  const listeners = new Set<() => void>();
-  capturing = (element) => {
-    captured = element;
-    for (const l of listeners) l();
-  };
-  const loading = load().catch((e: unknown) => { throw e; });
+  capturing = (element) => { captured = element; };
+  try {
+    await load();
+  } finally {
+    capturing = null;
+  }
   return function CapturedApp(): ReactElement {
-    const [element, setElement] = useState<ReactNode>(captured);
-    useEffect(() => {
-      const l = () => setElement(captured);
-      listeners.add(l);
-      void loading.then(l);
-      return () => { listeners.delete(l); };
-    }, []);
-    return createElement(Fragment, null, element);
+    return createElement(Fragment, null, captured);
   };
 }
 
