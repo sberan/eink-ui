@@ -42,8 +42,16 @@ React components ──► react-reconciler host ──► eink-core (Rust: Taff
 
 ## Try it in the browser
 
-The simulator is published on GitHub Pages: it opens on a gallery of every component and the
-two demo apps, all rendered through the real engine compiled to WebAssembly. Locally:
+**[Open the gallery](https://sberan.github.io/eink-ui/)**: one app with every component and
+every demo app as its pages, booted in the browser on the real engine compiled to WebAssembly,
+the same Rust core the Kindle runs. Walk the pages with the corner tabs, the arrow keys or the
+sidebar; Page Up and Page Down are the device's page buttons and go to the page shown.
+
+It is a debugging tool as well: open Chrome DevTools and the bundle maps back to the TypeScript
+sources (source maps are published), `eink` in the console is the host (`eink.hit(x, y)`,
+`eink.commit()`), and `gallery.show(id)` jumps to a page. Every refresh is animated with real
+e-ink timings (DU ≈ 260 ms, GC16 ≈ 450 ms with a flash), and the status line shows the rects and
+the refreshed area of each commit. Locally:
 
 ```sh
 ./build.sh wasm          # builds the core to js/sim/pkg/eink_wasm.wasm (Docker)
@@ -51,8 +59,8 @@ cd js && npm install
 npm run sim              # http://127.0.0.1:5173
 ```
 
-Every refresh is animated with real e-ink timings (DU ≈ 260 ms, GC16 ≈ 450 ms with a flash),
-and the status bar shows the rect list and refreshed area for each commit.
+The gallery is an ordinary app of the kit (`js/apps/gallery`), so it can also be installed on a
+device.
 
 ## Run it on a Kindle
 

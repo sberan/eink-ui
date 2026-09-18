@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "eink-sim",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd js && npm run sim"],
+      "port": 5173
+    }
+  ]
+}

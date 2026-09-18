@@ -8,8 +8,8 @@
     "test": "npm run typecheck && vitest run",
     "test:unit": "vitest run",
     "build": "./build.sh",
-    "build:glue": "esbuild sim/pkg/eink_wasm.ts --format=esm --target=es2020 --outfile=sim/pkg/eink_wasm.js",
-    "sim": "npm run build:glue && esbuild sim/sim.ts --bundle --target=es2020 --jsx=automatic --outfile=sim/app.js --servedir=sim --serve=5173",
+    "build:glue": "esbuild sim/pkg/eink_wasm.ts --bundle --format=esm --target=es2020 --outfile=sim/pkg/eink_wasm.js",
+    "sim": "npm run build:glue && esbuild sim/sim.ts --bundle --sourcemap --target=es2020 --jsx=automatic --outfile=sim/app.js --servedir=sim --serve=5173",
     "build:pages": "node scripts/build-pages.ts",
     "snapshot": "esbuild scripts/snapshot.ts --bundle --platform=node --format=esm --target=es2022 --jsx=automatic --define:process.env.NODE_ENV='\"production\"' --outfile=pages/snapshot.mjs && node pages/snapshot.mjs pages sim/pkg/eink_wasm.wasm && rm pages/snapshot.mjs"
   },

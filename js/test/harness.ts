@@ -29,6 +29,8 @@ export interface Harness {
   hasText(s: string): boolean;
   /** Taps the middle of the task row whose label is `label` (inside a markdown node). */
   tapTask(label: string): void;
+  /** Taps the live text node whose text is exactly `text`; the tap bubbles to the nearest onTap. */
+  tapText(text: string): void;
   nodes(): MockNode[];
   tree(id?: NodeId, depth?: number): string;
 }
@@ -82,6 +84,22 @@ export async function makeHarness(): Promise<Harness> {
   return {
     mock, host, calls, renderer, tree, liveTexts,
     hasText: (t: string) => liveTexts().some((x) => x.includes(t)),
+    tapText(text: string) {
+      const live = new Set<NodeId>();
+      const walk = (id: NodeId): void => {
+        live.add(id);
+        for (const c of mock._nodes.get(id)?.children ?? []) walk(c);
+      };
+      walk(mock._root());
+      for (const n of mock._nodes.values()) {
+        if (n.kind !== 'text' || n.paint.text !== text || !live.has(n.id)) continue;
+        const x = n.lastRect ? n.lastRect.x + Math.floor(n.lastRect.w / 2) : 0;
+        const y = n.lastRect ? n.lastRect.y + Math.floor(n.lastRect.h / 2) : 0;
+        mock.emit({ type: 'tap', id: n.id, x, y });
+        return;
+      }
+      throw new Error(`no live text node reading ${JSON.stringify(text)}`);
+    },
     tapTask(label: string) {
       for (const n of mock._nodes.values()) {
         if (n.kind !== 'markdown' || !n.lastRect) continue;

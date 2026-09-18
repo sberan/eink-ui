@@ -14,10 +14,18 @@ fs.mkdirSync(out, { recursive: true });
 // the runtime-loaded glue must exist next to the .wasm before pkg/ is copied
 await build({
   entryPoints: [path.join(root, 'sim/pkg/eink_wasm.ts')],
+  // bundled: a bare relative import left in the glue 404s in the browser and the page falls
+  // back to the JS mock without anyone noticing
+  bundle: true,
   format: 'esm',
   target: 'es2020',
   outfile: path.join(root, 'sim/pkg/eink_wasm.js'),
 });
+const glue = fs.readFileSync(path.join(root, 'sim/pkg/eink_wasm.js'), 'utf8');
+if (/^\s*import\b/m.test(glue)) {
+  console.error('  FAIL: the wasm glue still imports something at runtime; the browser would get a 404 and use the mock');
+  process.exit(1);
+}
 
 await build({
   entryPoints: [path.join(root, 'sim/sim.ts')],
@@ -26,6 +34,8 @@ await build({
   target: 'es2020',
   jsx: 'automatic',
   minify: true,
+  // the published site is a debugging tool too: DevTools maps the minified bundle back to the sources
+  sourcemap: true,
   legalComments: 'none',
   define: { 'process.env.NODE_ENV': '"production"' },
   outfile: path.join(out, 'app.js'),

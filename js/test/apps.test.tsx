@@ -173,9 +173,13 @@ describe('crossword app', () => {
     h.calls.length = 0;
     h.mock.emit({ type: 'key', key: 'C' });
     expect(cellLetters()).toContain('C');
-    // letter written, old cell unhighlighted, new cell highlighted; clue unchanged
+    // letter written, old cell unhighlighted, new cell highlighted (bg and ink of the square and
+    // its clue number); clue line unchanged
     const keys = h.propCalls().map(([, p]) => Object.keys(p).sort().join(','));
-    expect(keys.sort()).toEqual(['bg', 'bg', 'text']);
+    expect(keys.filter((k) => k === 'bg')).toHaveLength(2);
+    expect(keys.some((k) => k === 'text' || k === 'color,text')).toBe(true);
+    expect(keys.every((k) => ['bg', 'color', 'text', 'color,text'].includes(k))).toBe(true);
+    expect(keys.length).toBeLessThanOrEqual(7);
   });
 
   it('backspace clears the current cell, then walks back', async () => {

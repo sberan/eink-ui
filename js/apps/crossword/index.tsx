@@ -26,6 +26,9 @@ const Cell = memo(function Cell({ r, c, black, number, letter, selected, onSelec
   if (black) {
     return <eink-box bg={0} style={{ width: CELL, height: CELL }} />;
   }
+  // the clue number is an overlay in the corner, so the letter's box is the whole square in
+  // every cell and the letters of a row share one baseline; the selected square is inverted
+  const ink = selected ? 255 : 0;
   return (
     <eink-box
       hit
@@ -33,14 +36,14 @@ const Cell = memo(function Cell({ r, c, black, number, letter, selected, onSelec
       bg={selected ? SELECTED_BG : 255}
       border={2}
       border_color={0}
-      style={{ width: CELL, height: CELL, flex_direction: 'column' }}
+      style={{ width: CELL, height: CELL, align_items: 'center', justify_content: 'center' }}
     >
       {number > 0 && (
         <eink-text
           text={String(number)}
           font_size={18}
-          color={0}
-          style={{ height: 22, margin: [2, 0, 0, 5] }}
+          color={ink}
+          style={{ position: 'absolute', top: 2, left: 5, height: 22 }}
         />
       )}
       <eink-text
@@ -48,7 +51,8 @@ const Cell = memo(function Cell({ r, c, black, number, letter, selected, onSelec
         font_size={52}
         bold
         align="center"
-        style={{ flex_grow: 1, width: CELL - 4 }}
+        color={ink}
+        style={{ width: CELL - 4, height: CELL - 4 }}
       />
     </eink-box>
   );

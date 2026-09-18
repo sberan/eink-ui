@@ -9,9 +9,7 @@ import { createMockEink, type DrawText, type MeasureText } from './mock-eink.js'
 import {
   EMPTY_STATS, commitStats, formatRects, isDone, overlayFor, type CommitStats,
 } from './display.js';
-import { TodoApp } from '../apps/todo/index.js';
-import { CrosswordApp } from '../apps/crossword/index.js';
-import { STORIES, findStory } from '../stories/index.js';
+import { GalleryApp, PAGES, findPage } from '../apps/gallery/index.js';
 
 const W = 1072;
 const H = 1448;
@@ -193,41 +191,23 @@ function fitScale(): void {
   canvas.style.height = `${Math.floor(H * s)}px`;
 }
 
-// ---- gallery + routing ---------------------------------------------------
+// ---- the gallery app + routing -------------------------------------------
+// One app, the gallery, runs the whole time; the page shown is its `page` prop, which the URL
+// hash, the sidebar, the keyboard and the app's own corner tabs all drive through show().
 
-type AppName = 'todo' | 'crossword';
+const DEFAULT_PAGE = PAGES[0]?.id ?? '';
 
-const APPS: readonly { readonly name: AppName; readonly label: string; readonly render: () => ReactElement }[] = [
-  { name: 'todo', label: 'Todo', render: () => React.createElement(TodoApp) },
-  { name: 'crossword', label: 'Crossword', render: () => React.createElement(CrosswordApp) },
-];
-
-type Route =
-  | { readonly kind: 'app'; readonly name: AppName }
-  | { readonly kind: 'story'; readonly id: string };
-
-const DEFAULT_ROUTE: Route = { kind: 'story', id: STORIES[0]?.id ?? '' };
-
-function parseRoute(hash: string): Route {
-  const m = /^#\/(app|story)\/(.+)$/.exec(hash);
-  if (!m) return DEFAULT_ROUTE;
-  if (m[1] === 'app') {
-    const name = m[2];
-    if (name === 'todo' || name === 'crossword') return { kind: 'app', name };
-    return DEFAULT_ROUTE;
-  }
-  return findStory(m[2] ?? '') ? { kind: 'story', id: m[2] ?? '' } : DEFAULT_ROUTE;
+/** `#/page/<id>`; the older `#/story/<id>` and `#/app/<name>` links still resolve. */
+function parseRoute(hash: string): string {
+  const m = /^#\/(page|story|app)\/(.+)$/.exec(hash);
+  if (!m) return DEFAULT_PAGE;
+  const id = m[1] === 'app' ? `apps--${m[2] ?? ''}` : (m[2] ?? '');
+  return findPage(id) ? id : DEFAULT_PAGE;
 }
 
-function hrefOf(route: Route): string {
-  return route.kind === 'app' ? `#/app/${route.name}` : `#/story/${route.id}`;
-}
+const hrefOf = (id: string): string => `#/page/${id}`;
 
-function sameRoute(a: Route, b: Route): boolean {
-  return hrefOf(a) === hrefOf(b);
-}
-
-/** Plain-DOM sidebar: an anchor per entry, so deep links and back/forward just work. */
+/** Plain-DOM sidebar: an anchor per page, so deep links and back/forward just work. */
 function buildSidebar(): void {
   const add = (text: string): void => {
     const el = document.createElement('div');
@@ -235,55 +215,44 @@ function buildSidebar(): void {
     el.textContent = text;
     sidebar.append(el);
   };
-  const link = (route: Route, text: string): void => {
-    const a = document.createElement('a');
-    a.href = hrefOf(route);
-    a.textContent = text;
-    a.dataset['route'] = hrefOf(route);
-    sidebar.append(a);
-  };
-
-  add('Apps');
-  for (const app of APPS) link({ kind: 'app', name: app.name }, app.label);
-
   let group = '';
-  for (const s of STORIES) {
-    if (s.group !== group) { group = s.group; add(group); }
-    link({ kind: 'story', id: s.id }, s.name);
+  for (const p of PAGES) {
+    if (p.group !== group) { group = p.group; add(group); }
+    const a = document.createElement('a');
+    a.href = hrefOf(p.id);
+    a.textContent = p.name;
+    a.dataset['page'] = p.id;
+    sidebar.append(a);
   }
 }
 
-function markActive(route: Route): void {
-  const want = hrefOf(route);
+function markActive(id: string): void {
   for (const a of sidebar.querySelectorAll('a')) {
-    a.classList.toggle('on', a.dataset['route'] === want);
+    a.classList.toggle('on', a.dataset['page'] === id);
   }
 }
 
-function elementFor(route: Route): { element: ReactElement; title: string } | null {
-  if (route.kind === 'app') {
-    const app = APPS.find((a) => a.name === route.name);
-    return app ? { element: app.render(), title: `Apps / ${app.label}` } : null;
-  }
-  const story = findStory(route.id);
-  return story ? { element: story.render(), title: `${story.group} / ${story.name}` } : null;
-}
+let current = '';
 
-let current: Route | null = null;
-
-function show(route: Route, force = false): void {
-  if (!force && current && sameRoute(current, route)) return;
-  const picked = elementFor(route);
-  if (!picked) return;
-  current = route;
-  markActive(route);
-  titleEl.textContent = picked.title;
-  // the renderer and the host are singletons: unmount before mounting the next
-  unmount();
+function show(id: string): void {
+  const page = findPage(id);
+  if (!page || id === current) return;
+  current = id;
+  markActive(id);
+  titleEl.textContent = `${page.group} / ${page.name}`;
+  if (location.hash !== hrefOf(id)) history.replaceState(null, '', hrefOf(id));
   inFlight.length = 0;
   stats = EMPTY_STATS;
+  // a page change repaints most of the panel: a full refresh, as the device would do
   eink.request_full();
-  render(picked.element);
+  render(React.createElement(GalleryApp, { page: id, onPage: show }));
+}
+
+function step(by: number): void {
+  const n = PAGES.length;
+  const i = Math.max(0, PAGES.findIndex((p) => p.id === current));
+  const next = PAGES[(((i + by) % n) + n) % n];
+  if (next) show(next.id);
 }
 
 // ---- boot -----------------------------------------------------------------
@@ -304,9 +273,15 @@ void loadHost().then((host) => {
   window.addEventListener('keydown', (ev) => {
     if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
     let key = ev.key;
+    // arrows walk the gallery; Page Up/Down are the device's page buttons and go to the page shown
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      ev.preventDefault();
+      step(key === 'ArrowLeft' ? -1 : 1);
+      return;
+    }
     if (key === 'Backspace') key = 'BACKSPACE';
     else if (key === 'Enter') key = 'ENTER';
-    else if (key.length !== 1) return;
+    else if (key !== 'PageUp' && key !== 'PageDown' && key.length !== 1) return;
     ev.preventDefault();
     host.emit({ type: 'key', key });
   });
@@ -315,11 +290,19 @@ void loadHost().then((host) => {
     host.request_full();
     onPaint(host.commit());
   };
+  must<HTMLButtonElement>('prev').onclick = () => step(-1);
+  must<HTMLButtonElement>('next').onclick = () => step(1);
+  must<HTMLButtonElement>('pageup').onclick = () => host.emit({ type: 'key', key: 'PageUp' });
+  must<HTMLButtonElement>('pagedown').onclick = () => host.emit({ type: 'key', key: 'PageDown' });
   window.addEventListener('resize', fitScale);
   window.addEventListener('hashchange', () => { show(parseRoute(location.hash)); });
 
+  // for the DevTools console: the host and the gallery
+  Object.assign(globalThis, { eink: host, gallery: { pages: PAGES.map((p) => p.id), show, step } });
+  console.info('eink-ui: `eink` is the host (eink.hit(x, y), eink.commit()), `gallery.show(id)` and `gallery.pages` drive the pages');
+
   buildSidebar();
-  show(parseRoute(location.hash), true);
+  show(parseRoute(location.hash));
   fitScale();
   requestAnimationFrame(frame);
 });

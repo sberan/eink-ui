@@ -87,3 +87,41 @@ fn markdown_node_toggles_one_row() {
     assert_eq!(d[0].mode, Mode::Du);
     save(&scene, "markdown.png");
 }
+
+/// First and last framebuffer rows with ink inside a rect.
+fn ink_rows(s: &Scene, x: i32, y: i32, w: i32, h: i32) -> Option<(i32, i32)> {
+    let fb = s.fb();
+    let stride = SCREEN_W as usize;
+    let mut first = None;
+    let mut last = None;
+    for yy in y..y + h {
+        let row = &fb[yy as usize * stride + x as usize..yy as usize * stride + (x + w) as usize];
+        if row.iter().any(|v| *v < 128) {
+            first.get_or_insert(yy);
+            last = Some(yy);
+        }
+    }
+    Some((first?, last?))
+}
+
+#[test]
+fn text_is_centred_in_a_taller_box() {
+    // the same letter in two boxes taller than its line (72 px at 52 px bold): the glyph must
+    // sit lower in the taller box by half the height difference, not at the top of both
+    let mut s = Scene::new();
+    let root = s.create(Kind::Box);
+    s.set_props(root, r#"{"style":{"width":1072,"height":1448,"flex_direction":"row","gap":40,"padding":40},"bg":255}"#).unwrap();
+    let snug = s.create(Kind::Text);
+    s.set_props(snug, r#"{"text":"A","font_size":52,"bold":true,"align":"center","style":{"width":92,"height":80}}"#).unwrap();
+    let tall = s.create(Kind::Text);
+    s.set_props(tall, r#"{"text":"A","font_size":52,"bold":true,"align":"center","style":{"width":92,"height":160}}"#).unwrap();
+    s.append(root, snug);
+    s.append(root, tall);
+    s.set_root(root);
+    s.commit();
+    let (snug_top, snug_bottom) = ink_rows(&s, 40, 40, 92, 80).expect("ink in the snug box");
+    let (tall_top, tall_bottom) = ink_rows(&s, 172, 40, 92, 160).expect("ink in the tall box");
+    assert_eq!(snug_bottom - snug_top, tall_bottom - tall_top, "same glyph height");
+    let shift = tall_top - snug_top;
+    assert!((39..=41).contains(&shift), "the taller box centres the glyph, shift {shift}");
+}

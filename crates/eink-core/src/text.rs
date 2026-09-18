@@ -90,9 +90,12 @@ impl TextEngine {
         let lh = self.line_height(size, bold);
         let ascent = self.ascent(size, bold);
         let clip = clip.intersection(r);
+        // a box taller than its text centres the block, as the JS mock does; a crossword cell
+        // with and without a clue number then keeps its letter on the same line
+        let top = r.y as f32 + ((r.h as f32 - lh * lines.len() as f32) / 2.0).max(0.0);
         for (i, line) in lines.iter().enumerate() {
             let mut pen_x = r.x as f32 + if center { ((r.w as f32 - line.width) / 2.0).max(0.0) } else if right { (r.w as f32 - line.width).max(0.0) } else { 0.0 };
-            let baseline = r.y as f32 + lh * i as f32 + ascent;
+            let baseline = top + lh * i as f32 + ascent;
             for c in line.text.chars() {
                 let (m, bitmap) = self.glyph(c, size, bold).clone();
                 let gx = pen_x.round() as i32 + m.xmin;
