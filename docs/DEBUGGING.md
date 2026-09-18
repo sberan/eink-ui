@@ -50,6 +50,48 @@ What you get on connect:
   manager reboots the device after a few seconds.) If the download fails the host runs the cached
   copy and shows the error badge.
 
+## Power policy
+
+What stays on, and for how long, is a list of stages in `manifest.json` at the root of the
+synced repository. Time without interaction (a tap, a page button, the power button; not SSH or
+the debug port, though `:tap` counts) moves the device down the list; any interaction puts it
+back at the first stage at once. The default, used when the file or its `power` section is
+missing:
+
+```json
+{
+  "power": {
+    "stages": [
+      { "name": "on",        "minutes": 10, "functions": ["frontlight", "cpu", "wifi", "sync", "haptics"] },
+      { "name": "low power", "minutes": 50, "functions": ["wifi", "sync"] },
+      { "name": "sleep",     "suspend": true, "wake_every_minutes": 30 }
+    ]
+  }
+}
+```
+
+- `minutes` is how long the stage lasts; the last stage lasts until interaction.
+- `functions` names what stays on. Anything not listed is off for the stage:
+
+  | function | on | off |
+  |---|---|---|
+  | `frontlight` | auto or the fixed level from keys.conf | dark; the ambient light sensor is not polled |
+  | `cpu` | the normal governor (ondemand, up to 996 MHz) | pinned to the lowest clock (396 MHz) |
+  | `wifi` | radio on: pulls, SSH and the debug port work | radio off: unreachable until interaction |
+  | `sync` | the repository and the store are pulled every 5 minutes | no periodic pulls |
+  | `haptics` | a buzz on each tick | silent |
+
+- `suspend: true` sleeps the device (everything off) and wakes it every `wake_every_minutes` for
+  a pull, which is how a new bundle, host or policy still arrives. On a charger the suspend stage
+  is skipped and the device stays in the stage before it.
+- A change to `manifest.json` takes effect at the next pull. `:power` on the debug port shows the
+  stage in force, the time without interaction, and the policy as parsed. Unknown function names
+  are logged and ignored; a broken file falls back to the default.
+
+Measured on the Voyage: the frontlight at its auto level in a dim room is 65 to 70 mA, everything
+else awake with the light off about 20 mA (roughly 2.5 days of battery), and the CPU clock
+matters little at idle.
+
 ## SSH into the device
 
 The host also runs a small SSH server (dropbear, from the same `dropbearmulti` binary as the

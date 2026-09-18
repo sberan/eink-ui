@@ -4,6 +4,7 @@
 mod epdc;
 mod gh;
 mod input;
+mod power;
 mod repo;
 mod ssh;
 
@@ -57,7 +58,6 @@ pub fn bg<F: FnOnce() + Send + 'static>(f: F) -> std::thread::JoinHandle<()> {
     })
 }
 const WORK: &str = "/var/tmp/todo-app";
-const IDLE_AFTER: Duration = Duration::from_secs(180);
 const FRONTLIGHT: &str = "/sys/class/backlight/max77696-bl/brightness";
 const HAPTIC: &str = "/sys/devices/system/drv26xx_haptics/drv26xx_haptics0/play_waveform";
 const AMBIENT: &str = "/sys/devices/system/max44009_ctrl/max44009_ctrl0/max44009_lux";
@@ -99,7 +99,7 @@ fn set_frontlight(level: u32) {
 /// One auto-brightness step: hysteresis so a flickering room does not flicker the light, and a
 /// bounded ramp so a change is never a jump. Returns the level written, if any.
 fn auto_light_step(current: &mut u32) -> Option<u32> {
-    if frontlight_setting() != "auto" {
+    if frontlight_setting() != "auto" || power::LIGHT_OFF.load(std::sync::atomic::Ordering::Relaxed) {
         return None;
     }
     // `:light off|n` and the stock software move the light behind this loop's back; after
@@ -538,6 +538,9 @@ fn main() -> Result<()> {
         }
         eink.set("clear_error", Function::new(cx.clone(), || clear_error())?)?;
         eink.set("buzz", Function::new(cx.clone(), || {
+            if !power::HAPTICS.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             // the haptics driver blocks for the pulse: never on the UI thread
             bg(|| {
                 if let Err(e) = fs::write(HAPTIC, "1\n") {
@@ -680,6 +683,15 @@ fn main() -> Result<()> {
     let mut last_sync = Instant::now();
     let sync_tx = tx.clone();
     let mut light_level: u32 = fs::read_to_string(FRONTLIGHT).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    let mut stages = power::load(repo::REPO);
+    log(&format!("power policy: {}", power::describe(&stages)));
+    let mut functions = power::ALL_ON;
+    let mut governor: Option<String> = None;
+    // a restart is not an interaction: a host installed during a timed wake must not light the
+    // screen for the first stage's whole span
+    if let Some(idle) = saved_idle() {
+        last_input = Instant::now().checked_sub(idle).unwrap_or_else(Instant::now);
+    }
     let mut last_light = Instant::now() - LIGHT_TICK;
     let mut last_tap = Instant::now() - Duration::from_secs(10);
     loop {
@@ -786,6 +798,10 @@ fn main() -> Result<()> {
                 None
             }
             Ok(Event::Files(changed)) => {
+                if changed.iter().any(|p| p == "manifest.json") {
+                    stages = power::load(repo::REPO);
+                    log(&format!("power policy: {}", power::describe(&stages)));
+                }
                 // a bundle or host committed to the repository wins over the store's copy; the
                 // bundle is copied first so a host restart already finds it
                 let mut restart = false;
@@ -871,7 +887,7 @@ fn main() -> Result<()> {
                 log(&format!("frontlight {level} for {} lux", ambient_lux().unwrap_or(0)));
             }
         }
-        if last_sync.elapsed() >= Duration::from_secs(300) {
+        if power::SYNC.load(std::sync::atomic::Ordering::Relaxed) && last_sync.elapsed() >= Duration::from_secs(300) {
             last_sync = Instant::now();
             let tx = sync_tx.clone();
             bg(move || {
@@ -879,7 +895,23 @@ fn main() -> Result<()> {
             });
             let _ = repo_cmd.send(repo::SyncCmd::Now(None));
         }
-        if !charging() && last_input.elapsed() >= IDLE_AFTER {
+        // the power policy: stages by time without interaction (manifest.json). On a charger the
+        // suspend stage is skipped and the device stays in the stage before it.
+        let idle = last_input.elapsed();
+        let mut want = power::stage_at(&stages, idle);
+        if stages[want].suspend && charging() {
+            want = want.saturating_sub(1);
+        }
+        let (stage_name, stage_functions, suspend, wake_every) =
+            (stages[want].name.clone(), stages[want].functions, stages[want].suspend, stages[want].wake_every);
+        power::note_stage(&stage_name, idle);
+        if stage_functions != functions {
+            power::apply(functions, stage_functions, &mut governor);
+            functions = stage_functions;
+            light_level = fs::read_to_string(FRONTLIGHT).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+            log(&format!("power: stage '{stage_name}' after {} min without interaction", idle.as_secs() / 60));
+        }
+        if suspend && !charging() {
             deliver(&ctx, &rt, &listeners, &fb, r#"{"type":"power","state":"sleep"}"#);
             // idle is the time to clear ghosting: nobody is waiting on this flash
             if scene.borrow().partials_since_full() > 0 {
@@ -887,9 +919,15 @@ fn main() -> Result<()> {
                 let d = scene.borrow_mut().commit();
                 paint(&mut fb.borrow_mut(), &scene.borrow(), &d);
             }
-            let deferred = sleep_cycle(&rx, &repo_cmd);
+            let deferred = sleep_cycle(&rx, &repo_cmd, wake_every);
             deliver(&ctx, &rt, &listeners, &fb, r#"{"type":"power","state":"wake"}"#);
             for ev in deferred {
+                if let Event::Files(c) = &ev {
+                    if c.iter().any(|p| p == "manifest.json") {
+                        stages = power::load(repo::REPO);
+                        log(&format!("power policy: {}", power::describe(&stages)));
+                    }
+                }
                 let payload = match ev {
                     Event::Files(changed) => serde_json::json!({"type": "files", "changed": changed}).to_string(),
                     Event::SyncState(state) => format!(r#"{{"type":"sync","sync":{}}}"#, state.json()),
@@ -1212,8 +1250,19 @@ fn deliver(ctx: &JsContext, rt: &Runtime, listeners: &Rc<RefCell<Vec<rquickjs::P
 }
 
 /// Re-exec the running binary so the new bundle/binary takes over with a clean state.
+const LAST_INPUT_FILE: &str = "/var/tmp/eink-last-input";
+
+/// Time without interaction carried across a restart (tmpfs, so a reboot starts fresh).
+fn saved_idle() -> Option<Duration> {
+    let at: u64 = fs::read_to_string(LAST_INPUT_FILE).ok()?.trim().parse().ok()?;
+    let idle = now_secs().checked_sub(at)?;
+    (idle < 24 * 3600).then(|| Duration::from_secs(idle))
+}
+
 fn restart_self(path: &str) -> ! {
     use std::os::unix::process::CommandExt;
+    let last_input = now_secs().saturating_sub(power::IDLE_SECS.load(std::sync::atomic::Ordering::Relaxed));
+    let _ = fs::write(LAST_INPUT_FILE, format!("{last_input}\n"));
     log(&format!("restarting via {path}"));
     let err = Command::new(path).exec();
     log(&format!("exec failed: {err}"));
@@ -1439,8 +1488,9 @@ fn debug_command(cmd: &str) -> String {
             }
             Err(e) => format!("sync failed: {e:#}"),
         },
+        "power" => power::status(&power::load(repo::REPO)),
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :ssh [refresh|on|off|users a,b] :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :ssh [refresh|on|off|users a,b] :power :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
     }
 }
 
@@ -1469,23 +1519,25 @@ fn watch_powerd(tx: mpsc::Sender<Event>) {
     }
 }
 
-/// Same policy as the todo app: radio off, frontlight off, RTC wake every 30 min, resume on power key.
+/// Radio off, frontlight off, an RTC wake every `wake_every`, resume on the power key.
 /// Sleeps until a button or the USB cable wakes the device, syncing on each timed wake. A pull
 /// that lands during a timed wake is not thrown away: a new bundle or host restarts the host at
 /// once, and other file changes are returned so the app hears about them once it is awake.
-fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd>) -> Vec<Event> {
+fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd>, wake_every: Duration) -> Vec<Event> {
     let mut deferred = Vec::new();
     log("idle on battery, sleeping");
     let light = fs::read_to_string(FRONTLIGHT).ok().map(|v| v.trim().to_string()).filter(|v| v != "0");
     let _ = fs::write(FRONTLIGHT, "0\n");
     loop {
         lipc_set("com.lab126.wifid", "enable", "0");
+        let secs = wake_every.as_secs();
         let alarm = "/sys/class/rtc/rtc1/wakealarm";
         let _ = fs::write(alarm, "0\n");
-        if fs::write(alarm, "+1800\n").is_err() {
-            let _ = Command::new("rtcwake").args(["-d", "/dev/rtc1", "-m", "no", "-s", "1800"]).status();
+        if fs::write(alarm, format!("+{secs}\n")).is_err() {
+            let s = secs.to_string();
+            let _ = Command::new("rtcwake").args(["-d", "/dev/rtc1", "-m", "no", "-s", &s]).status();
         }
-        let target = now_secs() + 1800;
+        let target = now_secs().saturating_add(secs as _);
         std::thread::sleep(Duration::from_secs(2));
         if fs::write("/sys/power/state", "mem\n").is_err() {
             log("suspend failed; staying awake");
