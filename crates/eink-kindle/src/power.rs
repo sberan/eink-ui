@@ -9,7 +9,7 @@
 //!   { "name": "sleep",     "suspend": true, "wake_every_minutes": 30 }
 //! ] } }
 //! ```
-use crate::{ambient_lux, frontlight_setting, light_for, lipc_set, log, set_frontlight};
+use crate::{frontlight_apply, lipc_set, log};
 use std::{
     fs,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -44,8 +44,6 @@ pub struct Stage {
 const DEFAULT_WAKE: Duration = Duration::from_secs(30 * 60);
 const MIN_WAKE: Duration = Duration::from_secs(60);
 
-/// Auto-frontlight ramp paused while the stage has the light off.
-pub static LIGHT_OFF: AtomicBool = AtomicBool::new(false);
 pub static HAPTICS: AtomicBool = AtomicBool::new(true);
 pub static SYNC: AtomicBool = AtomicBool::new(true);
 /// For `:power`: the stage in force and the time without interaction.
@@ -179,18 +177,7 @@ fn has(f: &Functions, name: &str) -> bool {
 /// a stage with the CPU slowed down.
 pub fn apply(from: Functions, to: Functions, governor: &mut Option<String>) {
     if from.frontlight != to.frontlight {
-        LIGHT_OFF.store(!to.frontlight, Ordering::SeqCst);
-        if to.frontlight {
-            // someone is looking: straight to the level, no ramp
-            let level = match frontlight_setting().as_str() {
-                "auto" => ambient_lux().map(light_for).unwrap_or(0),
-                "off" => 0,
-                n => n.parse().unwrap_or(0),
-            };
-            set_frontlight(level);
-        } else {
-            set_frontlight(0);
-        }
+        frontlight_apply(to.frontlight);
     }
     if from.cpu != to.cpu {
         if to.cpu {

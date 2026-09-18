@@ -61,30 +61,16 @@ const WORK: &str = "/var/tmp/todo-app";
 const FRONTLIGHT: &str = "/sys/class/backlight/max77696-bl/brightness";
 const HAPTIC: &str = "/sys/devices/system/drv26xx_haptics/drv26xx_haptics0/play_waveform";
 const AMBIENT: &str = "/sys/devices/system/max44009_ctrl/max44009_ctrl0/max44009_lux";
-const FRONTLIGHT_MAX: u32 = 4095;
-const LIGHT_TICK: Duration = Duration::from_secs(20);
+const POWERD: &str = "com.lab126.powerd";
+/// The Kindle's own scale for the light, as in its settings slider.
+const FRONTLIGHT_MAX: u32 = 24;
 
 /// Ambient light in lux from the Voyage's MAX44009, if the sensor answers.
 fn ambient_lux() -> Option<u32> {
     fs::read_to_string(AMBIENT).ok().and_then(|s| s.trim().parse().ok())
 }
 
-/// Frontlight level for an ambient reading: nothing in daylight or a bright room, more as the
-/// room gets darker, capped well below the maximum, which is painful in the dark.
-fn light_for(lux: u32) -> u32 {
-    // calibrated against the Voyage's own scale: a bright room reads about 1300 here
-    match lux {
-        l if l >= 6000 => 0,
-        l if l >= 2500 => 700,
-        l if l >= 900 => 1500,
-        l if l >= 300 => 1900,
-        l if l >= 100 => 2300,
-        l if l >= 30 => 2600,
-        _ => 2900,
-    }
-}
-
-/// `frontlight=` in keys.conf: `auto` (default), `off`, or a fixed 0..4095.
+/// `frontlight=` in keys.conf: `auto` (default), `off`, or a fixed level 0..24.
 fn frontlight_setting() -> String {
     fs::read_to_string(format!("{DIR}/keys.conf")).ok()
         .and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("frontlight=").map(|v| v.trim().to_string())))
@@ -92,32 +78,41 @@ fn frontlight_setting() -> String {
         .unwrap_or_else(|| "auto".into())
 }
 
-fn set_frontlight(level: u32) {
-    let _ = fs::write(FRONTLIGHT, format!("{}\n", level.min(FRONTLIGHT_MAX)));
+/// The light belongs to powerd, which runs the stock auto brightness (lux buckets that the
+/// slider teaches, Nightlight), so the host only says whether the light may be on and which
+/// mode applies. `flAuto` goes off before a level, or powerd would raise it again.
+pub fn frontlight_apply(on: bool) {
+    if !on {
+        lipc_set(POWERD, "flAuto", "0");
+        lipc_set(POWERD, "flIntensity", "0");
+        return;
+    }
+    match frontlight_setting().as_str() {
+        "auto" => lipc_set(POWERD, "flAuto", "1"),
+        "off" => {
+            lipc_set(POWERD, "flAuto", "0");
+            lipc_set(POWERD, "flIntensity", "0");
+        }
+        n => {
+            let level = n.parse::<u32>().unwrap_or(0).min(FRONTLIGHT_MAX);
+            lipc_set(POWERD, "flAuto", "0");
+            lipc_set(POWERD, "flIntensity", &level.to_string());
+        }
+    }
 }
 
-/// One auto-brightness step: hysteresis so a flickering room does not flicker the light, and a
-/// bounded ramp so a change is never a jump. Returns the level written, if any.
-fn auto_light_step(current: &mut u32) -> Option<u32> {
-    if frontlight_setting() != "auto" || power::LIGHT_OFF.load(std::sync::atomic::Ordering::Relaxed) {
-        return None;
-    }
-    // `:light off|n` and the stock software move the light behind this loop's back; after
-    // `:light auto` the stale value made the ramp think it had arrived and the light stayed dark
-    if let Some(level) = fs::read_to_string(FRONTLIGHT).ok().and_then(|v| v.trim().parse().ok()) {
-        *current = level;
-    }
-    let lux = ambient_lux()?;
-    let target = light_for(lux);
-    let diff = target.abs_diff(*current);
-    if diff < 120 {
-        return None;
-    }
-    let step = diff.min(400);
-    let next = if target > *current { *current + step } else { *current - step };
-    *current = next;
-    set_frontlight(next);
-    Some(next)
+fn frontlight_status() -> String {
+    let get = |p: &str| lipc_get(POWERD, p).unwrap_or_else(|| "?".into());
+    format!(
+        "frontlight={} powerd: auto={} intensity={}/24 raw={} nightlight={} lux={} hw={}",
+        frontlight_setting(),
+        get("flAuto"),
+        get("flIntensity"),
+        get("flRawIntensity"),
+        get("alsNightlightEn"),
+        ambient_lux().map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
+        fs::read_to_string(FRONTLIGHT).unwrap_or_default().trim(),
+    )
 }
 
 pub enum Event {
@@ -284,6 +279,11 @@ pub fn log(msg: &str) {
 
 fn lipc_set(src: &str, prop: &str, val: &str) {
     let _ = Command::new("lipc-set-prop").args([src, prop, val]).status();
+}
+
+fn lipc_get(src: &str, prop: &str) -> Option<String> {
+    let out = Command::new("lipc-get-prop").args(["-q", src, prop]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 const STORAGE_FILE: &str = "/var/local/eink-ui/storage.json";
@@ -682,17 +682,16 @@ fn main() -> Result<()> {
     let mut last_input = Instant::now();
     let mut last_sync = Instant::now();
     let sync_tx = tx.clone();
-    let mut light_level: u32 = fs::read_to_string(FRONTLIGHT).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
     let mut stages = power::load(repo::REPO);
     log(&format!("power policy: {}", power::describe(&stages)));
     let mut functions = power::ALL_ON;
+    frontlight_apply(true);
     let mut governor: Option<String> = None;
     // a restart is not an interaction: a host installed during a timed wake must not light the
     // screen for the first stage's whole span
     if let Some(idle) = saved_idle() {
         last_input = Instant::now().checked_sub(idle).unwrap_or_else(Instant::now);
     }
-    let mut last_light = Instant::now() - LIGHT_TICK;
     let mut last_tap = Instant::now() - Duration::from_secs(10);
     loop {
         let fb_for_panic = fb.clone();
@@ -881,12 +880,6 @@ fn main() -> Result<()> {
                 ));
             }
         }
-        if last_light.elapsed() >= LIGHT_TICK {
-            last_light = Instant::now();
-            if let Some(level) = auto_light_step(&mut light_level) {
-                log(&format!("frontlight {level} for {} lux", ambient_lux().unwrap_or(0)));
-            }
-        }
         if power::SYNC.load(std::sync::atomic::Ordering::Relaxed) && last_sync.elapsed() >= Duration::from_secs(300) {
             last_sync = Instant::now();
             let tx = sync_tx.clone();
@@ -908,7 +901,6 @@ fn main() -> Result<()> {
         if stage_functions != functions {
             power::apply(functions, stage_functions, &mut governor);
             functions = stage_functions;
-            light_level = fs::read_to_string(FRONTLIGHT).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
             log(&format!("power: stage '{stage_name}' after {} min without interaction", idle.as_secs() / 60));
         }
         if suspend && !charging() {
@@ -1425,15 +1417,22 @@ fn debug_command(cmd: &str) -> String {
             }
         }
         c if c.starts_with("light") => {
-            // :light auto|off|<0-4095>   frontlight policy, remembered in keys.conf
+            // :light auto|off|<0-24>|learn <0-24>|nightlight on|off   the light is powerd's (see docs)
             let v = c[5..].trim();
             match v {
-                "" => format!("frontlight={} lux={} level={}", frontlight_setting(), ambient_lux().map(|l| l.to_string()).unwrap_or("?".into()), fs::read_to_string(FRONTLIGHT).unwrap_or_default().trim()),
-                "auto" => { let _ = repo::set_conf("frontlight", "auto"); "frontlight=auto (next tick)".into() }
-                "off" => { let _ = repo::set_conf("frontlight", "off"); set_frontlight(0); "frontlight=off".into() }
+                "" => frontlight_status(),
+                "auto" => { let _ = repo::set_conf("frontlight", "auto"); frontlight_apply(true); frontlight_status() }
+                "off" => { let _ = repo::set_conf("frontlight", "off"); frontlight_apply(true); frontlight_status() }
+                "nightlight on" => { lipc_set(POWERD, "alsNightlightEn", "1"); frontlight_status() }
+                "nightlight off" => { lipc_set(POWERD, "alsNightlightEn", "0"); frontlight_status() }
+                l if l.starts_with("learn ") => match l[6..].trim().parse::<u32>() {
+                    // with auto on, a level teaches powerd's bucket for the current light
+                    Ok(level) if level <= FRONTLIGHT_MAX => { lipc_set(POWERD, "flIntensity", &level.to_string()); frontlight_status() }
+                    _ => "usage: :light learn <0-24>".into(),
+                },
                 n => match n.parse::<u32>() {
-                    Ok(level) if level <= FRONTLIGHT_MAX => { let _ = repo::set_conf("frontlight", n); set_frontlight(level); format!("frontlight={level}") }
-                    _ => "usage: :light auto|off|<0-4095>".into(),
+                    Ok(level) if level <= FRONTLIGHT_MAX => { let _ = repo::set_conf("frontlight", n); frontlight_apply(true); frontlight_status() }
+                    _ => "usage: :light auto|off|<0-24>|learn <0-24>|nightlight on|off".into(),
                 },
             }
         }
@@ -1526,8 +1525,6 @@ fn watch_powerd(tx: mpsc::Sender<Event>) {
 fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd>, wake_every: Duration) -> Vec<Event> {
     let mut deferred = Vec::new();
     log("idle on battery, sleeping");
-    let light = fs::read_to_string(FRONTLIGHT).ok().map(|v| v.trim().to_string()).filter(|v| v != "0");
-    let _ = fs::write(FRONTLIGHT, "0\n");
     loop {
         lipc_set("com.lab126.wifid", "enable", "0");
         let secs = wake_every.as_secs();
@@ -1589,9 +1586,6 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd
         if wake {
             break;
         }
-    }
-    if let Some(v) = light {
-        let _ = fs::write(FRONTLIGHT, format!("{v}\n"));
     }
     deferred
 }

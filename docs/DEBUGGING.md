@@ -43,7 +43,8 @@ What you get on connect:
   | `:log [n]` | the last `n` lines of host.log |
   | `:conf key=value` | set a keys.conf entry (values are never echoed) |
   | `:ls dir`, `:cat file`, `:strings file` | read-only looks at the device's filesystem |
-  | `:theme dark\|light`, `:light auto\|off\|n` | pixel inversion; frontlight (auto follows the ambient light sensor) |
+  | `:theme dark\|light` | pixel inversion |
+  | `:light [auto\|off\|0-24\|learn 0-24\|nightlight on\|off]` | the frontlight, on the Kindle's own 0 to 24 scale; see "Frontlight" below |
 
   Without a laptop: press the power button five times within four seconds. The host buzzes once
   and restarts, which refetches `app.js`. (A long hold is not an option: the Kindle's own power
@@ -75,7 +76,7 @@ missing:
 
   | function | on | off |
   |---|---|---|
-  | `frontlight` | auto or the fixed level from keys.conf | dark; the ambient light sensor is not polled |
+  | `frontlight` | powerd's auto brightness, or the fixed level from keys.conf | off |
   | `cpu` | the normal governor (ondemand, up to 996 MHz) | pinned to the lowest clock (396 MHz) |
   | `wifi` | radio on: pulls, SSH and the debug port work | radio off: unreachable until interaction |
   | `sync` | the repository and the store are pulled every 5 minutes | no periodic pulls |
@@ -91,6 +92,22 @@ missing:
 Measured on the Voyage: the frontlight at its auto level in a dim room is 65 to 70 mA, everything
 else awake with the light off about 20 mA (roughly 2.5 days of battery), and the CPU clock
 matters little at idle.
+
+## Frontlight
+
+The light is driven by the Kindle's own `powerd`, not by the host, so it behaves exactly as the
+stock software: auto brightness from the ambient light sensor, a manual level that teaches the
+current light bucket, and Nightlight, which dims slowly in the dark. The host only tells powerd
+whether the light may be on (the power policy) and which mode applies, through its `flAuto`,
+`flIntensity` and `alsNightlightEn` properties.
+
+- keys.conf `frontlight=auto` (default), `off`, or a fixed level `0` to `24` on the scale of the
+  settings slider. `:light` shows what powerd is doing: mode, level, raw PWM, Nightlight, lux.
+- `:light learn 12` with auto on sets the level for the current light and powerd remembers it
+  for that bucket, like moving the slider does on the stock UI.
+- The stock table as powerd printed it on a Voyage (lux range to raw PWM out of 4095): below 70
+  lux 163, 70 to 140 801, 140 to 300 1601, 300 to 1500 1963, 1500 to 4500 1084, above 4500
+  (sunlight) 1. Dim in the dark, brightest in a bright room, off outdoors.
 
 ## SSH into the device
 
