@@ -63,7 +63,7 @@ rules mechanically.
 
 The main loop paints and handles input; it never waits on anything else. Network requests run
 on host threads and come back as events: `fetch` returns a promise that the loop settles, the
-store sync reports through `Synced`, and the debug port has its own thread. Partial refreshes
+store sync reports through `Synced`, and the control socket has its own thread. Partial refreshes
 do not wait for the panel; only a full flash does. The JavaScript side follows suit: nothing
 blocks between an input event and its commit, and anything that can take time is `async` and
 awaited off the input path (a tap toggles locally first and posts in the background). Logging

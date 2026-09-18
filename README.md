@@ -96,10 +96,13 @@ days, a tap on the header redraws, a tap on the footer returns to the Kindle UI.
 
 ## Debug it wirelessly
 
-The host listens on TCP 2323: connect with `kindle/debug.sh` for the live log and a JavaScript
-REPL inside the running app; `:reload` and `:update` pull new bundles and binaries over Wi-Fi, so
-the USB cable is only needed once. Errors at runtime show a small `!` badge in the top-right
-corner and the reason in the log. Details in [docs/DEBUGGING.md](docs/DEBUGGING.md).
+SSH is the only way in, with the keys from your GitHub account, and on the device the host
+answers to one command: `ssh kindle eink log -f` follows the live log, `eink js '<expr>'`
+evaluates JavaScript inside the running app, `eink settings`, `eink power` and `eink light`
+show and change what the device does, and `eink sync` pulls the repository now. New bundles and
+host binaries arrive by `git push`, so the USB cable is only needed once. Errors at runtime show
+a small `!` badge in the top-right corner and the reason in the log. Details in
+[docs/DEBUGGING.md](docs/DEBUGGING.md).
 
 ## Layout of the repository
 
@@ -117,7 +120,9 @@ corner and the reason in the log. Details in [docs/DEBUGGING.md](docs/DEBUGGING.
 | `js/apps` | Todo list and crossword demos. |
 | `js/sim` | Browser simulator: component gallery, apps, e-ink refresh timing. |
 | `js/stories` | Component stories shown in the simulator's gallery. |
-| `kindle/` | Launcher scriptlets, first-time USB install, wireless `push.sh`, `debug.sh`. |
+| `cli/` | The `eink-ui` command: `init`, `dev`, `build`, `sync`. |
+| `host/` | The device host binary the kit ships at its own version (`build` copies it into an app's `bin/`). |
+| `kindle/` | Launcher scriptlets and the first-time USB install. |
 | `docs/` | Architecture and remote debugging guides. |
 | `docs/ARCHITECTURE.md` | The host API contract shared by the wasm and QuickJS hosts. |
 

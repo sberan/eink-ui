@@ -85,7 +85,7 @@ the device keeps only what is needed to reach the repository: `repo_url`, `repo_
 | `power.stages` | the power policy, next section |
 
 **`data/` is the only folder the device writes.** The app's files live there (the reader's
-notes), and so does `data/settings.json`: what the debug port's setters (`:light`, `:theme`,
+notes), and so does `data/settings.json`: what the `eink` command's setters (`:light`, `:theme`,
 `:ssh`, `:set`) change, merged over the `eink` section key by key and committed like a tick.
 The host refuses to write or commit anything else, so the device can never corrupt the app it
 runs; `package.json`, `dist/` and `bin/` only ever flow from the repository to the device.
@@ -97,9 +97,10 @@ anything else is a string).
 
 ## Power policy
 
-What stays on, and for how long, is the `power.stages` list in the settings. Time without interaction (a tap, a page button, the power button; not SSH or
-the debug port, though `:tap` counts) moves the device down the list; any interaction puts it
-back at the first stage at once. The default, used when the file or its `power` section is
+What stays on, and for how long, is the `power.stages` list in the settings. Time without
+interaction (a tap, a page button, the power button; not SSH or the `eink` command, though
+`eink tap` counts) moves the device down the list; any interaction puts it back at the first
+stage at once. The default, used when the file or its `power` section is
 missing:
 
 ```json
@@ -119,16 +120,16 @@ missing:
 
   | function | on | off |
   |---|---|---|
-  | `frontlight` | powerd's auto brightness, or the fixed level from keys.conf | off |
+  | `frontlight` | powerd's auto brightness, the dark-room mode, or a fixed level, per the settings | off |
   | `cpu` | the normal governor (ondemand, up to 996 MHz) | pinned to the lowest clock (396 MHz) |
-  | `wifi` | radio on: pulls, SSH and the debug port work | radio off: unreachable until interaction |
+  | `wifi` | radio on: pulls, SSH and the `eink` command work | radio off: unreachable until interaction |
   | `sync` | the repository and the store are pulled every 5 minutes | no periodic pulls |
   | `haptics` | a buzz on each tick | silent |
 
 - `suspend: true` sleeps the device (everything off) and wakes it every `wake_every_minutes` for
   a pull, which is how a new bundle, host or policy still arrives. On a charger the suspend stage
   is skipped and the device stays in the stage before it.
-- A change to the settings takes effect at the next pull. `:power` on the debug port shows the
+- A change to the settings takes effect at the next pull. `eink power` shows the
   stage in force, the time without interaction, and the policy as parsed. Unknown function names
   are logged and ignored; a broken file falls back to the default.
 
@@ -167,7 +168,7 @@ ssh root@<kindle-ip> tail -f /mnt/us/todo-app/host.log
 ssh root@<kindle-ip> top                    # the host, the sync worker, powerd
 scp app.js root@<kindle-ip>:/mnt/us/todo-app/
 ssh root@<kindle-ip> cat /dev/fb0 | magick -size 1088x1448 -depth 8 gray:- screen.png
-ssh -L 2323:localhost:2323 root@<kindle-ip> # the debug port through the tunnel
+ssh root@<kindle-ip> eink log -f       # the host's log, live
 ```
 
 Logins are by key only; the build has no password authentication at all. The authorized keys
@@ -243,8 +244,8 @@ For a tight local loop without the cloud, point `update_url` at a directory on y
 served by any static HTTP server (no manifest needed) and use `kindle/push.sh`, or run
 "SSH On" on the device and `scp` straight into `/mnt/us/todo-app`.
 
-Over the debug port, `:sync` pulls the store now and reports what changed, `:url` shows or sets
-the store, `:reload` restarts (which syncs first), and `:update` fetches `eink-host` by name.
+`eink sync` pulls the store now and reports what changed, `eink url` shows or sets the store,
+`eink reload` restarts (which syncs first), and `eink update` fetches `eink-host` by name.
 
 ## The synced repository
 
@@ -287,7 +288,7 @@ corner of the panel and stays there until the next `:reload` or until the app ca
 - a panic inside the host (caught, logged, and the loop continues),
 - a framebuffer refresh the kernel rejected.
 
-The message behind the badge is always in the log, so `kindle/debug.sh` shows the cause.
+The message behind the badge is always in the log, so `ssh kindle eink log 200` shows the cause.
 
 ## Reading logs without a network
 
@@ -297,5 +298,7 @@ drive mode that partition is unmounted on the device, so lines written during th
 
 ## Security note
 
-The debug port has no authentication. It is meant for a home network; do not expose the Kindle
-to an untrusted LAN with the host running, or bind it elsewhere in `debug_server()` first.
+The only way into the device over the network is SSH, key-only, with the keys GitHub publishes
+for the accounts in `ssh.users`; the host's control socket is local to the device. What that
+means is that whoever can add a key to one of those GitHub accounts is root on the Kindle when it
+is on your Wi-Fi. Keep it on a home network, and keep `ssh.users` short.
