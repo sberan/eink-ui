@@ -39,6 +39,8 @@ export interface GalleryAppProps {
   /** Page id to show; when given, the gallery is controlled and reports moves through onPage. */
   page?: string | undefined;
   onPage?: ((id: string) => void) | undefined;
+  /** The pages to walk; the kit's own by default. `eink-ui dev` puts the app under test first. */
+  pages?: readonly GalleryPage[] | undefined;
 }
 
 const TAB = 56;
@@ -57,16 +59,16 @@ function Tab({ label, onTap, x, width = TAB }: { label: string; onTap: () => voi
   );
 }
 
-function Index({ current, onPick }: { current: string; onPick: (id: string) => void }) {
+function Index({ pages, current, onPick }: { pages: readonly GalleryPage[]; current: string; onPick: (id: string) => void }) {
   const groups = useMemo(() => {
     const out: { group: string; pages: GalleryPage[] }[] = [];
-    for (const p of PAGES) {
+    for (const p of pages) {
       const last = out[out.length - 1];
       if (last && last.group === p.group) last.pages.push(p);
       else out.push({ group: p.group, pages: [p] });
     }
     return out;
-  }, []);
+  }, [pages]);
   // two columns: the panel is tall but the list is long
   const half = Math.ceil(groups.length / 2);
   const columns = [groups.slice(0, half), groups.slice(half)];
@@ -95,27 +97,27 @@ function Index({ current, onPick }: { current: string; onPick: (id: string) => v
   );
 }
 
-export function GalleryApp({ page, onPage }: GalleryAppProps) {
-  const [own, setOwn] = useStoredState<string>('gallery:page', PAGES[0]?.id ?? '');
+export function GalleryApp({ page, onPage, pages = PAGES }: GalleryAppProps) {
+  const [own, setOwn] = useStoredState<string>('gallery:page', pages[0]?.id ?? '');
   const [index, setIndex] = useState(false);
   const wanted = page ?? own;
-  const at = Math.max(0, PAGES.findIndex((p) => p.id === wanted));
-  const current = PAGES[at];
+  const at = Math.max(0, pages.findIndex((p) => p.id === wanted));
+  const current = pages[at];
 
   const goto = useCallback((i: number) => {
-    const n = PAGES.length;
-    const next = PAGES[((i % n) + n) % n];
+    const n = pages.length;
+    const next = pages[((i % n) + n) % n];
     if (!next) return;
     setOwn(next.id);
     onPage?.(next.id);
     setIndex(false);
-  }, [onPage, setOwn]);
+  }, [onPage, setOwn, pages]);
 
   if (!current) return <Text>No pages.</Text>;
   return (
     <eink-box bg={255} style={{ width: PANEL_W, height: PANEL_H }}>
       {index
-        ? <Index current={current.id} onPick={(id) => goto(PAGES.findIndex((p) => p.id === id))} />
+        ? <Index pages={pages} current={current.id} onPick={(id) => goto(pages.findIndex((p) => p.id === id))} />
         : <eink-box key={current.id} style={{ width: PANEL_W, height: PANEL_H }}>{current.render()}</eink-box>}
       <Tab label={'‹'} x={CORNER + INDEX_TAB + 6 + TAB + 6} onTap={() => goto(at - 1)} />
       <Tab label={'›'} x={CORNER + INDEX_TAB + 6} onTap={() => goto(at + 1)} />

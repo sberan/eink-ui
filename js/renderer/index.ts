@@ -1,6 +1,7 @@
 import Reconciler from 'react-reconciler';
 import { DefaultEventPriority, LegacyRoot } from 'react-reconciler/constants.js';
-import type { ReactNode } from 'react';
+import { Fragment, createElement, useEffect, useState } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import type {
   EinkHost, EinkInputEvent, EinkProps, NodeId, Unsubscribe,
 } from '../host/eink.js';
@@ -235,8 +236,39 @@ let unsubscribe: Unsubscribe | null = null;
 // so a second render() must not register a second listener on the same host.
 let subscribedHost: EinkHost | null = null;
 
+let capturing: ((element: ReactNode) => void) | null = null;
+
+/**
+ * For the simulator: loads an app module and hands back what it passed to `render()` as a
+ * component, so the app becomes a page of the simulator instead of taking the panel. The
+ * import is dynamic so the module runs after the capture is armed.
+ */
+export function captureApp(load: () => Promise<unknown>): () => ReactElement {
+  let captured: ReactNode = null;
+  const listeners = new Set<() => void>();
+  capturing = (element) => {
+    captured = element;
+    for (const l of listeners) l();
+  };
+  const loading = load().catch((e: unknown) => { throw e; });
+  return function CapturedApp(): ReactElement {
+    const [element, setElement] = useState<ReactNode>(captured);
+    useEffect(() => {
+      const l = () => setElement(captured);
+      listeners.add(l);
+      void loading.then(l);
+      return () => { listeners.delete(l); };
+    }, []);
+    return createElement(Fragment, null, element);
+  };
+}
+
 /** Mount `element`. Creates the scene root box and wires input on first call. */
 export function render(element: ReactNode): EinkInstance {
+  if (capturing) {
+    capturing(element);
+    return container ?? { id: -1, type: 'eink-box', props: {}, parent: null, children: [] };
+  }
   let c = container;
   if (!root || !c) {
     const host = eink();

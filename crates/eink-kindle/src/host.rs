@@ -189,7 +189,10 @@ pub struct SyncOutcome {
     pub host_changed: bool,
 }
 
-static DEBUG_CLIENTS: std::sync::Mutex<Vec<std::net::TcpStream>> = std::sync::Mutex::new(Vec::new());
+static DEBUG_CLIENTS: std::sync::Mutex<Vec<std::os::unix::net::UnixStream>> = std::sync::Mutex::new(Vec::new());
+/// The control socket `eink` (over SSH) talks to; the reply to a command ends with an RS line.
+const CTL_SOCKET: &str = "/var/tmp/eink.sock";
+const CTL_END: &str = "\u{1e}";
 static LAST_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 const BADGE: u32 = 36; // error badge: black rounded square with a white "!" in the top-right corner
@@ -451,6 +454,12 @@ fn paint(fb: &mut epdc::Epdc, scene: &Scene, damage: &[Damage]) {
 }
 
 fn main() -> Result<()> {
+    // `eink ...` (this binary linked as eink) or `eink-host ctl ...`: a client of the running host
+    let args: Vec<String> = std::env::args().collect();
+    let as_eink = args.first().map(|a| a.rsplit('/').next() == Some("eink")).unwrap_or(false);
+    if as_eink || args.get(1).map(|a| a == "ctl").unwrap_or(false) {
+        std::process::exit(ctl(&args[if as_eink { 1 } else { 2 }..]));
+    }
     // the UI thread outranks everything the host spawns (see `bg`); needs root, which the Kindle has
     if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -5) } != 0 {
         log("setpriority failed: background work will compete with the UI thread");
@@ -468,7 +477,6 @@ fn main() -> Result<()> {
         lipc_set("com.lab126.deviced", prop, "1");
     }
     lipc_set("com.lab126.powerd", "preventScreenSaver", "1");
-    open_port(2323);
 
     let (tx, rx) = mpsc::channel::<Event>();
     let (bundle, fetch_error) = load_bundle(&tx)?;
@@ -1014,28 +1022,24 @@ fn exit_to_kindle() {
     std::process::exit(0)
 }
 
-/// Remote debugger: `nc <kindle-ip> 2323` streams the log; each line you type is evaluated as
-/// JavaScript in the app's context and the result is printed back. LAN only, no auth.
+/// The control socket behind the `eink` command over SSH: a line starting with `:` is a host
+/// command, `:follow` subscribes the client to the log stream, anything else is evaluated as
+/// JavaScript in the app's context. Every reply ends with an RS line so the client knows where
+/// it stops. Local only: reaching it means being root on the device already.
 fn debug_server(tx: mpsc::Sender<Event>) {
     use std::io::{BufRead, BufReader};
-    let Ok(listener) = std::net::TcpListener::bind("0.0.0.0:2323") else {
-        log("debug server: bind failed");
+    use std::os::unix::net::UnixListener;
+    let _ = fs::remove_file(CTL_SOCKET);
+    let Ok(listener) = UnixListener::bind(CTL_SOCKET) else {
+        log("control socket: bind failed");
         return;
     };
-    log("debug server listening on :2323");
     for stream in listener.incoming().flatten() {
-        let _ = stream.set_nodelay(true);
         let mut writer = match stream.try_clone() {
             Ok(w) => w,
             Err(_) => continue,
         };
         let _ = writer.set_write_timeout(Some(Duration::from_millis(500)));
-        let _ = writer.write_all(b"eink-host debug: type JS, get results; log lines stream here\n");
-        if let Ok(mut c) = DEBUG_CLIENTS.lock() {
-            if let Ok(w) = writer.try_clone() {
-                c.push(w);
-            }
-        }
         let tx = tx.clone();
         bg(move || {
             for line in BufReader::new(stream).lines().map_while(Result::ok) {
@@ -1043,24 +1047,68 @@ fn debug_server(tx: mpsc::Sender<Event>) {
                 if code.is_empty() {
                     continue;
                 }
-                if let Some(cmd) = code.strip_prefix(':') {
-                    let reply = debug_command(cmd.trim());
-                    if writer.write_all(format!("=> {reply}\n").as_bytes()).is_err() {
+                let reply = if code == ":follow" {
+                    if let (Ok(mut c), Ok(w)) = (DEBUG_CLIENTS.lock(), writer.try_clone()) {
+                        c.push(w);
+                    }
+                    "following the log".to_string()
+                } else if let Some(cmd) = code.strip_prefix(':') {
+                    debug_command(cmd.trim())
+                } else {
+                    let (rtx, rrx) = mpsc::channel();
+                    if tx.send(Event::Eval(code, rtx)).is_err() {
                         break;
                     }
-                    continue;
-                }
-                let (rtx, rrx) = mpsc::channel();
-                if tx.send(Event::Eval(code, rtx)).is_err() {
-                    break;
-                }
-                let reply = rrx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| "(timeout)".into());
-                if writer.write_all(format!("=> {reply}\n").as_bytes()).is_err() {
+                    rrx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| "(timeout)".into())
+                };
+                if writer.write_all(format!("{reply}\n{CTL_END}\n").as_bytes()).is_err() {
                     break;
                 }
             }
         });
     }
+}
+
+/// `eink <command...>` on the device (the host binary linked as `eink`): sends one line to the
+/// control socket and prints the reply. `eink log -f` streams the log; `eink js '<expr>'`
+/// evaluates JavaScript in the app.
+fn ctl(args: &[String]) -> i32 {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixStream;
+    if args.is_empty() || args[0] == "--help" || args[0] == "help" {
+        println!("eink <command> [args]   a host command, as on the old debug port without the colon: settings, power, light, ssh, log [n], sync, tap x y, key PageUp|PageDown, theme, set a.b=c, conf k=v, restart, reload, exit\neink log -f             follow the log\neink js '<expression>'  evaluate in the app");
+        return 0;
+    }
+    let follow = args[0] == "log" && args.get(1).map(|s| s == "-f").unwrap_or(false);
+    let line = if follow {
+        ":follow".to_string()
+    } else if args[0] == "js" {
+        args[1..].join(" ")
+    } else {
+        format!(":{}", args.join(" "))
+    };
+    let mut stream = match UnixStream::connect(CTL_SOCKET) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("eink: the host is not running ({CTL_SOCKET}: {e})");
+            return 2;
+        }
+    };
+    if stream.write_all(format!("{line}\n").as_bytes()).is_err() {
+        eprintln!("eink: could not send");
+        return 2;
+    }
+    let reader = BufReader::new(stream);
+    for l in reader.lines().map_while(Result::ok) {
+        if l == CTL_END {
+            if follow {
+                continue;
+            }
+            return 0;
+        }
+        println!("{l}");
+    }
+    0
 }
 
 const DEFAULT_UPDATE_URL: &str = "https://kindle-todo-one.vercel.app/";

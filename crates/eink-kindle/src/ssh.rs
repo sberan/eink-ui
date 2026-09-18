@@ -204,12 +204,26 @@ pub fn ensure() -> Result<(), String> {
     }
     chmod(KEYS, 0o600);
     install_keys()?;
-    if !Path::new("/usr/bin/scp").exists() {
-        let linked = run("/usr/sbin/mntroot", &["rw"])
-            .and_then(|_| std::os::unix::fs::symlink(&db, "/usr/bin/scp").map_err(|e| format!("link scp: {e}")));
+    // scp and the `eink` command need names on the login shell's fixed PATH, which is on the
+    // read-only rootfs: linked once
+    let me = std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned());
+    let mut links: Vec<(&str, String)> = vec![("/usr/bin/scp", db.clone())];
+    if let Some(me) = me {
+        links.push(("/usr/bin/eink", me));
+    }
+    let missing: Vec<(&str, String)> = links.into_iter().filter(|(at, to)| fs::read_link(at).map(|l| l.to_string_lossy() != to.as_str()).unwrap_or(true)).collect();
+    if !missing.is_empty() {
+        let linked = run("/usr/sbin/mntroot", &["rw"]).and_then(|_| {
+            for (at, to) in &missing {
+                let _ = fs::remove_file(at);
+                std::os::unix::fs::symlink(to, at).map_err(|e| format!("link {at}: {e}"))?;
+            }
+            Ok(String::new())
+        });
         let _ = run("/usr/sbin/mntroot", &["ro"]);
-        if let Err(e) = linked {
-            log(&format!("ssh: scp will not work: {e}"));
+        match linked {
+            Ok(_) => log(&format!("ssh: linked {}", missing.iter().map(|(a, _)| *a).collect::<Vec<_>>().join(", "))),
+            Err(e) => log(&format!("ssh: {e}")),
         }
     }
     crate::open_port(PORT);

@@ -1,10 +1,13 @@
 {
   "name": "eink-ui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "React UI toolkit for e-ink devices: Rust layout and damage-tracked refresh, QuickJS host for jailbroken Kindles, wasm simulator",
   "license": "MIT",
   "private": true,
   "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/sberan/eink-ui.git" },
+  "bin": { "eink-ui": "./cli/eink-ui.mjs" },
+  "engines": { "node": ">=20" },
   "exports": {
     ".": "./js/renderer/index.ts",
     "./renderer": "./js/renderer/index.ts",
@@ -13,11 +16,17 @@
     "./files": "./js/files/index.ts",
     "./storage": "./js/storage/index.ts",
     "./host": "./js/host/eink.ts",
+    "./sim": "./js/sim/boot.ts",
     "./apps/reader": "./js/apps/reader/index.tsx",
     "./apps/todo": "./js/apps/todo/index.tsx",
-    "./apps/crossword": "./js/apps/crossword/index.tsx"
+    "./apps/crossword": "./js/apps/crossword/index.tsx",
+    "./apps/gallery": "./js/apps/gallery/index.tsx",
+    "./js/global.d.ts": "./js/global.d.ts"
   },
-  "files": ["js/renderer", "js/components", "js/device", "js/files", "js/storage", "js/host", "js/apps", "js/global.d.ts"],
+  "files": ["cli", "host", "js/renderer", "js/components", "js/device", "js/files", "js/storage", "js/host", "js/apps", "js/stories", "js/sim", "js/global.d.ts"],
+  "dependencies": {
+    "esbuild": "^0.25.0"
+  },
   "peerDependencies": {
     "react": "^18.3.0",
     "react-reconciler": "^0.29.0"

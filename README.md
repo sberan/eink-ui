@@ -62,6 +62,23 @@ npm run sim              # http://127.0.0.1:5173
 The gallery is an ordinary app of the kit (`js/apps/gallery`), so it can also be installed on a
 device.
 
+## Make an app
+
+Four commands, like any web project. The device is a git remote's follower: it pulls the
+repository, `data/` is the only folder it writes, and settings ride in `package.json`.
+
+```sh
+npx eink-ui init my-kindle   # the repository and the example app (git init, npm install)
+cd my-kindle
+npm run dev                  # http://127.0.0.1:5173: your app on the real core, rebuilt as you save
+npm run build                # dist/app.js and bin/eink-host (the host at eink-ui's version)
+npm run sync                 # commit, push, and tell a reachable device (ssh kindle) to pull
+```
+
+`package.json` is the whole contract: `main` is the bundle the device runs, the `eink` section
+its settings (see [docs/DEBUGGING.md](docs/DEBUGGING.md)), and the `eink-ui` dependency
+version is the host version that `build` puts in `bin/`. Debugging is `ssh kindle eink ...`.
+
 ## Run it on a Kindle
 
 Requirements: a jailbroken Kindle with the scriptlet hook (`.sh` files in `documents/` run from

@@ -1,19 +1,20 @@
 # Remote debugging and wireless updates
 
-The Kindle host (`eink-host`) opens a plain TCP port, **2323**, on the device's Wi-Fi address.
-Anything that can open a socket is a debugger: `nc`, `telnet`, or a two-line script.
+SSH is the only way in (see "SSH into the device" below), and on the device the host answers to
+one command, `eink`, over a local socket. From a laptop that is `ssh kindle eink ...`:
 
 ```sh
-kindle/debug.sh            # = nc <kindle-ip> 2323 (set KINDLE_IP or pass the address)
+ssh kindle eink log -f                 # the live log: taps with the node they resolved to, keys,
+                                       # powerd events, console.log and __eink.log from the app
+ssh kindle eink js '__eink.hit(500, 400)'      # JavaScript evaluated inside the running app
+ssh kindle eink settings               # the app entry and the settings in force
+ssh kindle eink light dark 6 10        # any host command, as listed below without the colon
 ```
 
-What you get on connect:
-
-- **Live log.** Every line the host logs streams to you as it happens: taps with the node they
-  resolved to, key presses, powerd events, JavaScript `console.log`, `__eink.log(...)` from the app,
-  and errors (prefixed `ERROR:`).
-- **A JavaScript REPL inside the running app.** Type an expression, press Enter, and it is evaluated
-  in the app's QuickJS context on the main loop, with the result JSON-printed back:
+- **The log** is what the host writes to `/mnt/us/todo-app/host.log`; `eink log 50` prints the
+  tail, `eink log -f` follows it.
+- **The JavaScript REPL** evaluates on the main loop, the same loop that serves input, so you
+  can inspect or change React state through whatever the app exposes on `globalThis`:
 
   ```
   __eink.hit(500, 400)              => 28
@@ -21,10 +22,9 @@ What you get on connect:
   __eink.request_full(); __eink.commit()
   ```
 
-  Because evaluation happens on the same loop that serves input, you can inspect or mutate React
-  state through whatever your app exposes on `globalThis`.
-
-- **Host commands.** Lines starting with `:` are handled by the host itself:
+- **Host commands.** The table below lists them with the `:` the socket protocol uses; the
+  `eink` command takes them without it (`eink tap 60 380`). `npx eink-ui sync` uses
+  `ssh kindle eink sync` to make a reachable device pull at once.
 
   | command | effect |
   |---|---|
