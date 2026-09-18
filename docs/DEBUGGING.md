@@ -44,7 +44,7 @@ What you get on connect:
   | `:conf key=value` | set a keys.conf entry (values are never echoed) |
   | `:ls dir`, `:cat file`, `:strings file` | read-only looks at the device's filesystem |
   | `:theme dark\|light` | pixel inversion |
-  | `:light [auto\|off\|0-24\|learn 0-24\|nightlight on\|off]` | the frontlight, on the Kindle's own 0 to 24 scale; see "Frontlight" below |
+  | `:light [auto\|off\|dark [level [lux]]\|0-24\|learn 0-24\|nightlight on\|off]` | the frontlight, on the Kindle's own 0 to 24 scale; see "Frontlight" below |
 
   Without a laptop: press the power button five times within four seconds. The host buzzes once
   and restarts, which refetches `app.js`. (A long hold is not an option: the Kindle's own power
@@ -101,8 +101,12 @@ current light bucket, and Nightlight, which dims slowly in the dark. The host on
 whether the light may be on (the power policy) and which mode applies, through its `flAuto`,
 `flIntensity` and `alsNightlightEn` properties.
 
-- keys.conf `frontlight=auto` (default), `off`, or a fixed level `0` to `24` on the scale of the
-  settings slider. `:light` shows what powerd is doing: mode, level, raw PWM, Nightlight, lux.
+- keys.conf `frontlight=auto` (default), `off`, `dark`, or a fixed level `0` to `24` on the scale
+  of the settings slider. `:light` shows what powerd is doing: mode, level, raw PWM, Nightlight,
+  lux.
+- `dark` keeps the light off unless the room is really dark: on at `dark_level` (default 8) below
+  `dark_lux` (default 15), off again above twice that. `:light dark 6 10` sets both. This is not
+  a stock mode; the stock auto brightness always keeps some light on.
 - `:light learn 12` with auto on sets the level for the current light and powerd remembers it
   for that bucket, like moving the slider does on the stock UI.
 - The stock table as powerd printed it on a Voyage (lux range to raw PWM out of 4095): below 70

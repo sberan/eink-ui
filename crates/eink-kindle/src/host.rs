@@ -70,7 +70,40 @@ fn ambient_lux() -> Option<u32> {
     fs::read_to_string(AMBIENT).ok().and_then(|s| s.trim().parse().ok())
 }
 
-/// `frontlight=` in keys.conf: `auto` (default), `off`, or a fixed level 0..24.
+/// `frontlight=dark`: on only when the room is really dark. `dark_lux` (default 15) is the
+/// threshold; the light goes off again above twice that, so a flicker around it does not toggle.
+fn dark_lux() -> u32 {
+    repo::conf_value("dark_lux").and_then(|v| v.parse().ok()).filter(|l| *l > 0).unwrap_or(15)
+}
+
+/// Level for a dark room in `frontlight=dark`, on the Kindle's 0..24 scale (default 8).
+fn dark_level() -> u32 {
+    repo::conf_value("dark_level").and_then(|v| v.parse().ok()).unwrap_or(8).min(FRONTLIGHT_MAX)
+}
+
+static DARK_LIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn dark_now() -> bool {
+    let lux = ambient_lux().unwrap_or(u32::MAX);
+    if DARK_LIT.load(std::sync::atomic::Ordering::Relaxed) { lux < dark_lux() * 2 } else { lux < dark_lux() }
+}
+
+/// Every half minute while a stage has the light on: switch the dark-room light on or off.
+fn dark_light_tick() {
+    if frontlight_setting() != "dark" {
+        return;
+    }
+    let lit = DARK_LIT.load(std::sync::atomic::Ordering::Relaxed);
+    let want = dark_now();
+    if want != lit {
+        DARK_LIT.store(want, std::sync::atomic::Ordering::Relaxed);
+        lipc_set(POWERD, "flIntensity", &if want { dark_level() } else { 0 }.to_string());
+        log(&format!("frontlight: {} ({} lux)", if want { format!("dark room, on at {}", dark_level()) } else { "off".into() }, ambient_lux().unwrap_or(0)));
+    }
+}
+
+/// `frontlight=` in keys.conf: `auto` (default, the stock behaviour), `off`, `dark` (only in a
+/// dark room), or a fixed level 0..24.
 fn frontlight_setting() -> String {
     fs::read_to_string(format!("{DIR}/keys.conf")).ok()
         .and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("frontlight=").map(|v| v.trim().to_string())))
@@ -93,6 +126,12 @@ pub fn frontlight_apply(on: bool) {
             lipc_set(POWERD, "flAuto", "0");
             lipc_set(POWERD, "flIntensity", "0");
         }
+        "dark" => {
+            lipc_set(POWERD, "flAuto", "0");
+            let lit = dark_now();
+            DARK_LIT.store(lit, std::sync::atomic::Ordering::Relaxed);
+            lipc_set(POWERD, "flIntensity", &if lit { dark_level() } else { 0 }.to_string());
+        }
         n => {
             let level = n.parse::<u32>().unwrap_or(0).min(FRONTLIGHT_MAX);
             lipc_set(POWERD, "flAuto", "0");
@@ -103,9 +142,13 @@ pub fn frontlight_apply(on: bool) {
 
 fn frontlight_status() -> String {
     let get = |p: &str| lipc_get(POWERD, p).unwrap_or_else(|| "?".into());
+    let mode = match frontlight_setting().as_str() {
+        "dark" => format!("dark (on at {} below {} lux, off above {})", dark_level(), dark_lux(), dark_lux() * 2),
+        m => m.to_string(),
+    };
     format!(
         "frontlight={} powerd: auto={} intensity={}/24 raw={} nightlight={} lux={} hw={}",
-        frontlight_setting(),
+        mode,
         get("flAuto"),
         get("flIntensity"),
         get("flRawIntensity"),
@@ -693,6 +736,7 @@ fn main() -> Result<()> {
         last_input = Instant::now().checked_sub(idle).unwrap_or_else(Instant::now);
     }
     let mut last_tap = Instant::now() - Duration::from_secs(10);
+    let mut last_dark = Instant::now();
     loop {
         let fb_for_panic = fb.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -879,6 +923,10 @@ fn main() -> Result<()> {
                     total.saturating_sub(blit + epdc), if full { ", full flash" } else { "" }, if busy { ", git busy" } else { "" }
                 ));
             }
+        }
+        if functions.frontlight && last_dark.elapsed() >= Duration::from_secs(30) {
+            last_dark = Instant::now();
+            dark_light_tick();
         }
         if power::SYNC.load(std::sync::atomic::Ordering::Relaxed) && last_sync.elapsed() >= Duration::from_secs(300) {
             last_sync = Instant::now();
@@ -1423,6 +1471,21 @@ fn debug_command(cmd: &str) -> String {
                 "" => frontlight_status(),
                 "auto" => { let _ = repo::set_conf("frontlight", "auto"); frontlight_apply(true); frontlight_status() }
                 "off" => { let _ = repo::set_conf("frontlight", "off"); frontlight_apply(true); frontlight_status() }
+                "dark" => { let _ = repo::set_conf("frontlight", "dark"); frontlight_apply(true); frontlight_status() }
+                d if d.starts_with("dark ") => {
+                    // :light dark <level> [<lux>]
+                    let mut it = d[5..].split_whitespace();
+                    match (it.next().and_then(|v| v.parse::<u32>().ok()), it.next().map(|v| v.parse::<u32>())) {
+                        (Some(level), lux) if level <= FRONTLIGHT_MAX && !matches!(lux, Some(Err(_)) | Some(Ok(0))) => {
+                            let _ = repo::set_conf("dark_level", &level.to_string());
+                            if let Some(Ok(l)) = lux { let _ = repo::set_conf("dark_lux", &l.to_string()); }
+                            let _ = repo::set_conf("frontlight", "dark");
+                            frontlight_apply(true);
+                            frontlight_status()
+                        }
+                        _ => "usage: :light dark [<level 0-24> [<lux threshold>]]".into(),
+                    }
+                }
                 "nightlight on" => { lipc_set(POWERD, "alsNightlightEn", "1"); frontlight_status() }
                 "nightlight off" => { lipc_set(POWERD, "alsNightlightEn", "0"); frontlight_status() }
                 l if l.starts_with("learn ") => match l[6..].trim().parse::<u32>() {
@@ -1432,7 +1495,7 @@ fn debug_command(cmd: &str) -> String {
                 },
                 n => match n.parse::<u32>() {
                     Ok(level) if level <= FRONTLIGHT_MAX => { let _ = repo::set_conf("frontlight", n); frontlight_apply(true); frontlight_status() }
-                    _ => "usage: :light auto|off|<0-24>|learn <0-24>|nightlight on|off".into(),
+                    _ => "usage: :light auto|off|dark [level [lux]]|<0-24>|learn <0-24>|nightlight on|off".into(),
                 },
             }
         }
