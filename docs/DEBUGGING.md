@@ -41,7 +41,8 @@ What you get on connect:
   | `:tap x y`, `:key PageUp\|PageDown\|Power` | inject input, for scripted tests over the network |
   | `:slow ms` | log every input event slower than `ms` (default 80; `:slow 1` logs them all) |
   | `:log [n]` | the last `n` lines of host.log |
-  | `:conf key=value` | set a keys.conf entry (values are never echoed) |
+  | `:conf key=value` | set a keys.conf entry: `repo_url`, `repo_branch`, `github_token`, `update_url` (values are never echoed) |
+  | `:manifest`, `:set section.key=value` | show the device's settings; change one and commit it (see "manifest.json") |
   | `:ls dir`, `:cat file`, `:strings file` | read-only looks at the device's filesystem |
   | `:theme dark\|light` | pixel inversion |
   | `:light [auto\|off\|dark [level [lux]]\|0-24\|learn 0-24\|nightlight on\|off]` | the frontlight, on the Kindle's own 0 to 24 scale; see "Frontlight" below |
@@ -51,10 +52,41 @@ What you get on connect:
   manager reboots the device after a few seconds.) If the download fails the host runs the cached
   copy and shows the error badge.
 
+## manifest.json: the device's settings
+
+Every setting of the device that is not an address or a secret lives in `manifest.json` at the
+root of the synced repository, so it travels with the app, agents can change it with a commit,
+and the debug port's setters (`:light`, `:theme`, `:ssh`, `:set`) write it back and commit it
+like a tick. keys.conf on the device keeps only what is needed to reach the repository:
+`repo_url`, `repo_branch`, `github_token`, `update_url`. The whole file, with the defaults:
+
+```json
+{
+  "app":     { "home": "days/" },
+  "display": { "theme": "light", "frontlight": "auto", "dark_lux": 15, "dark_level": 8 },
+  "clock":   { "tz": "auto" },
+  "ssh":     { "enabled": true, "users": ["<owner of repo_url>"] },
+  "power":   { "stages": [ ...see below... ] }
+}
+```
+
+| key | meaning |
+|---|---|
+| `app.*` | the app's own settings; the reader uses `app.home` as the folder it pages through |
+| `display.theme` | `light` or `dark` (pixel inversion) |
+| `display.frontlight` | `auto` (stock), `off`, `dark`, or a fixed `"0"` to `"24"`; see "Frontlight" |
+| `display.dark_lux`, `display.dark_level` | the dark-room mode's threshold and level |
+| `clock.tz` | `auto` (detected from the device) or a POSIX zone such as `CST6CDT,M3.2.0,M11.1.0`; needs a restart |
+| `ssh.enabled`, `ssh.users` | the SSH server and the GitHub accounts whose keys may log in |
+| `power.stages` | the power policy, next section |
+
+A committed change applies at the next pull (5 minutes awake, every RTC wake asleep, or
+`:sync`). `:manifest` prints the file as the device sees it; `:set display.theme=dark` writes
+one key (numbers, booleans and JSON lists parse as JSON, anything else is a string).
+
 ## Power policy
 
-What stays on, and for how long, is a list of stages in `manifest.json` at the root of the
-synced repository. Time without interaction (a tap, a page button, the power button; not SSH or
+What stays on, and for how long, is the `power.stages` list in the manifest. Time without interaction (a tap, a page button, the power button; not SSH or
 the debug port, though `:tap` counts) moves the device down the list; any interaction puts it
 back at the first stage at once. The default, used when the file or its `power` section is
 missing:
@@ -101,9 +133,9 @@ current light bucket, and Nightlight, which dims slowly in the dark. The host on
 whether the light may be on (the power policy) and which mode applies, through its `flAuto`,
 `flIntensity` and `alsNightlightEn` properties.
 
-- keys.conf `frontlight=auto` (default), `off`, `dark`, or a fixed level `0` to `24` on the scale
-  of the settings slider. `:light` shows what powerd is doing: mode, level, raw PWM, Nightlight,
-  lux.
+- `display.frontlight` in the manifest: `auto` (default), `off`, `dark`, or a fixed level `0` to
+  `24` on the scale of the settings slider. `:light` shows what powerd is doing: mode, level, raw
+  PWM, Nightlight, lux.
 - `dark` keeps the light off unless the room is really dark: on at `dark_level` (default 8) below
   `dark_lux` (default 15), off again above twice that. `:light dark 6 10` sets both. This is not
   a stock mode; the stock auto brightness always keeps some light on.
@@ -133,12 +165,12 @@ can push to the repository can also log in, and a key removed on GitHub stops wo
 next refresh (at start and every 15 minutes while awake, or `:ssh refresh`). Every listed
 account must answer for the file to be rewritten, so a flaky network never revokes anything.
 
-keys.conf:
+In the manifest:
 
 | key | meaning |
 |---|---|
-| `ssh=off` | do not run the server (default: on) |
-| `ssh_users=alice,bob` | GitHub accounts whose keys may log in (default: the owner of `repo_url`) |
+| `ssh.enabled: false` | do not run the server (default: true) |
+| `ssh.users: ["alice", "bob"]` | GitHub accounts whose keys may log in (default: the owner of `repo_url`) |
 
 The host key and the fetched keys live in `/var/local/eink-ui/ssh/`; the keys are copied into
 root's own `~/.ssh` (a tmpfs path on the Kindle, recreated at every start) because dropbear

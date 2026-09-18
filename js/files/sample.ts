@@ -38,4 +38,16 @@ show their text, and anything the panel cannot draw is left out.
 
 Tap the title to add a task.
 `,
+  'manifest.json': `{
+  "app": { "home": "days/" },
+  "display": { "theme": "light", "frontlight": "auto", "dark_lux": 15, "dark_level": 8 },
+  "clock": { "tz": "auto" },
+  "ssh": { "enabled": true, "users": ["sberan"] },
+  "power": { "stages": [
+    { "name": "on", "minutes": 10, "functions": ["frontlight", "cpu", "wifi", "sync", "haptics"] },
+    { "name": "low power", "minutes": 50, "functions": ["wifi", "sync"] },
+    { "name": "sleep", "suspend": true, "wake_every_minutes": 30 }
+  ] }
+}
+`,
 };

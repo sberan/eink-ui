@@ -97,10 +97,49 @@ export function useSync(): SyncState {
   return useSyncExternalStore(subscribe, () => syncState());
 }
 
+/** The device's settings: `manifest.json` at the root of the repository (docs/DEBUGGING.md). */
+export type Manifest = Readonly<Record<string, unknown>>;
+
+const EMPTY_MANIFEST: Manifest = Object.freeze({});
+let manifestText: string | null | undefined;
+let manifestValue: Manifest = EMPTY_MANIFEST;
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** Parsed once per text, so the snapshot stays the same object until a pull changes the file. */
+export function readManifest(): Manifest {
+  const text = readFile('manifest.json');
+  if (text !== manifestText) {
+    manifestText = text;
+    let parsed: unknown = {};
+    try {
+      parsed = text === null ? {} : JSON.parse(text);
+    } catch {
+      parsed = {};
+    }
+    manifestValue = isObject(parsed) ? parsed : EMPTY_MANIFEST;
+  }
+  return manifestValue;
+}
+
+export function useManifest(): Manifest {
+  return useSyncExternalStore(subscribe, readManifest);
+}
+
+/** One section of the manifest as an object, `{}` when absent: `manifestSection(m, 'app')`. */
+export function manifestSection(m: Manifest, key: string): Readonly<Record<string, unknown>> {
+  const v = m[key];
+  return isObject(v) ? v : EMPTY_MANIFEST;
+}
+
 /** Tests and the simulator reset the module between hosts. */
 export function resetFiles(): void {
   texts.clear();
   lists.clear();
   sync = NO_SYNC;
   syncRead = false;
+  manifestText = undefined;
+  manifestValue = EMPTY_MANIFEST;
 }

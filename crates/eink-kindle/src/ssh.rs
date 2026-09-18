@@ -1,7 +1,7 @@
 //! SSH into the device: a dropbear server that the host starts, key-only, with the authorized
 //! keys fetched from GitHub (`https://github.com/<user>.keys`), so whoever can push to the
-//! repository can also log in. keys.conf: `ssh=off` disables it, `ssh_users=alice,bob` names
-//! the GitHub accounts (default: the owner of `repo_url`).
+//! repository can also log in. In the manifest, `ssh.enabled: false` disables it and
+//! `ssh.users: ["alice", "bob"]` names the GitHub accounts (default: the owner of `repo_url`).
 use crate::repo::{self, TOOLS};
 use crate::{bg, log};
 use std::{
@@ -30,13 +30,16 @@ fn dropbear() -> String {
 }
 
 pub fn enabled() -> bool {
-    repo::conf_value("ssh").map_or(true, |v| v != "off")
+    crate::manifest::flag(&["ssh", "enabled"], true)
 }
 
-/// GitHub accounts whose keys may log in: `ssh_users=`, else the owner of `repo_url`.
+/// GitHub accounts whose keys may log in: `ssh.users` in the manifest, else the owner of `repo_url`.
 pub fn users() -> Vec<String> {
-    if let Some(v) = repo::conf_value("ssh_users") {
-        return v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    if let Some(list) = crate::manifest::list(&["ssh", "users"]) {
+        let users: Vec<String> = list.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        if !users.is_empty() {
+            return users;
+        }
     }
     repo::repo_url().and_then(|u| github_owner(&u)).into_iter().collect()
 }
@@ -240,7 +243,7 @@ fn looks_like_key(line: &str) -> bool {
 pub fn refresh() -> Result<String, String> {
     let users = users();
     if users.is_empty() {
-        return Err("no ssh_users= and no GitHub repo_url in keys.conf".into());
+        return Err("no ssh.users in the manifest and no GitHub repo_url in keys.conf".into());
     }
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
     let mut keys = String::new();
@@ -279,7 +282,7 @@ pub fn status() -> String {
     let state = match pid() {
         Some(p) => format!("running (pid {p}) on :{PORT}"),
         None if enabled() => "not running".to_string(),
-        None => "off (ssh=off in keys.conf)".to_string(),
+        None => "off (ssh.enabled is false in the manifest)".to_string(),
     };
     let count = fs::read_to_string(KEYS).map(|s| s.lines().filter(|l| looks_like_key(l)).count()).unwrap_or(0);
     let last = LAST.lock().map(|g| g.clone()).unwrap_or_default();

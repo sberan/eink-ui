@@ -4,6 +4,7 @@
 mod epdc;
 mod gh;
 mod input;
+mod manifest;
 mod power;
 mod repo;
 mod ssh;
@@ -73,12 +74,12 @@ fn ambient_lux() -> Option<u32> {
 /// `frontlight=dark`: on only when the room is really dark. `dark_lux` (default 15) is the
 /// threshold; the light goes off again above twice that, so a flicker around it does not toggle.
 fn dark_lux() -> u32 {
-    repo::conf_value("dark_lux").and_then(|v| v.parse().ok()).filter(|l| *l > 0).unwrap_or(15)
+    manifest::number(&["display", "dark_lux"], 15).max(1)
 }
 
 /// Level for a dark room in `frontlight=dark`, on the Kindle's 0..24 scale (default 8).
 fn dark_level() -> u32 {
-    repo::conf_value("dark_level").and_then(|v| v.parse().ok()).unwrap_or(8).min(FRONTLIGHT_MAX)
+    manifest::number(&["display", "dark_level"], 8).min(FRONTLIGHT_MAX)
 }
 
 static DARK_LIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -102,13 +103,16 @@ fn dark_light_tick() {
     }
 }
 
-/// `frontlight=` in keys.conf: `auto` (default, the stock behaviour), `off`, `dark` (only in a
-/// dark room), or a fixed level 0..24.
+/// `display.frontlight` in the manifest: `auto` (default, the stock behaviour), `off`, `dark`
+/// (only in a dark room), or a fixed level 0..24.
 fn frontlight_setting() -> String {
-    fs::read_to_string(format!("{DIR}/keys.conf")).ok()
-        .and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("frontlight=").map(|v| v.trim().to_string())))
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "auto".into())
+    manifest::string(&["display", "frontlight"], "auto")
+}
+
+/// `display.theme` in the manifest: pixel inversion on `dark`. Returns whether it changed.
+fn apply_theme() -> bool {
+    let dark = manifest::string(&["display", "theme"], "light") == "dark";
+    INVERT.swap(dark, std::sync::atomic::Ordering::Relaxed) != dark
 }
 
 /// The light belongs to powerd, which runs the stock auto brightness (lux buckets that the
@@ -256,8 +260,9 @@ const ZONES: &[(&str, &str)] = &[
 /// The local zone as a POSIX TZ string and where it came from: `tz=` in keys.conf, else a zone
 /// name the stock firmware cached, else the plain offset it keeps in tzVar (no daylight rule).
 fn detect_tz() -> Option<(String, &'static str)> {
-    if let Some(tz) = fs::read_to_string(format!("{DIR}/keys.conf")).ok().and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("tz=").map(|v| v.trim().to_string()))).filter(|v| !v.is_empty()) {
-        return Some((tz, "keys.conf"));
+    let tz = manifest::string(&["clock", "tz"], "auto");
+    if !tz.is_empty() && tz != "auto" {
+        return Some((tz, "manifest.json"));
     }
     if let Ok(db) = fs::read("/var/local/system/TimeZoneCacheManager.db") {
         let text = String::from_utf8_lossy(&db);
@@ -453,9 +458,7 @@ fn main() -> Result<()> {
     fs::create_dir_all(DIR)?;
     // volumd kills anything holding /mnt/us busy before exporting it over USB: never sit there
     let _ = std::env::set_current_dir("/");
-    if fs::read_to_string(format!("{DIR}/keys.conf")).map(|s| s.lines().any(|l| l.trim() == "theme=dark")).unwrap_or(false) {
-        INVERT.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    apply_theme();
     if let Some((tz, source)) = detect_tz() {
         std::env::set_var("TZ", &tz);
         log(&format!("timezone {tz} ({source})"));
@@ -844,6 +847,13 @@ fn main() -> Result<()> {
                 if changed.iter().any(|p| p == "manifest.json") {
                     stages = power::load(repo::REPO);
                     log(&format!("power policy: {}", power::describe(&stages)));
+                    if apply_theme() {
+                        if let Some(mtx) = MAIN_TX.lock().ok().and_then(|g| g.clone()) {
+                            let _ = mtx.send(Event::Repaint);
+                        }
+                    }
+                    frontlight_apply(functions.frontlight);
+                    log(&format!("manifest applied: theme {}, frontlight {}; a clock.tz change needs a restart", if INVERT.load(std::sync::atomic::Ordering::Relaxed) { "dark" } else { "light" }, frontlight_setting()));
                 }
                 // a bundle or host committed to the repository wins over the store's copy; the
                 // bundle is copied first so a host restart already finds it
@@ -1405,12 +1415,22 @@ fn debug_command(cmd: &str) -> String {
             lines[start..].join(" | ")
         }
         c if c.starts_with("conf ") => match c[5..].trim().split_once('=') {
-            // :conf key=value   writes keys.conf (tz=, update_url=, repo_url=, repo_branch=); restart to apply
+            // :conf key=value   writes keys.conf, which only holds addresses and the token
+            // (update_url=, repo_url=, repo_branch=, github_token=); restart to apply
             Some((k, v)) if !k.trim().is_empty() => match repo::set_conf(k.trim(), v.trim()) {
                 Ok(()) => format!("{}={} (restart to apply)", k.trim(), v.trim()),
                 Err(e) => format!("could not write keys.conf: {e}"),
             },
             _ => "usage: :conf key=value".into(),
+        },
+        "manifest" => serde_json::to_string_pretty(&manifest::read()).unwrap_or_default(),
+        c if c.starts_with("set ") => match c[4..].trim().split_once('=') {
+            // :set display.theme=dark   writes the manifest and commits it; applies at the next pull
+            Some((k, v)) if !k.trim().is_empty() => match manifest::set_from_text(k.trim(), v) {
+                Ok(s) => format!("{s}; applies when the pull lands (`:sync`)"),
+                Err(e) => format!("could not write the manifest: {e}"),
+            },
+            _ => "usage: :set section.key=value".into(),
         },
         c if c.starts_with("ls ") => {
             // :ls <dir>   read-only listing, for finding where the stock firmware keeps things
@@ -1450,12 +1470,12 @@ fn debug_command(cmd: &str) -> String {
             }
         }
         c if c.starts_with("theme") => {
-            // :theme dark|light   inverts the panel live and remembers it in keys.conf
+            // :theme dark|light   inverts the panel live and remembers it in the manifest
             match c[5..].trim() {
                 "dark" | "light" => {
                     let dark = c[5..].trim() == "dark";
                     INVERT.store(dark, std::sync::atomic::Ordering::Relaxed);
-                    let _ = repo::set_conf("theme", if dark { "dark" } else { "" });
+                    let _ = manifest::set(&["display", "theme"], serde_json::json!(if dark { "dark" } else { "light" }));
                     if let Some(tx) = MAIN_TX.lock().ok().and_then(|g| g.clone()) {
                         let _ = tx.send(Event::Repaint);
                     }
@@ -1469,17 +1489,19 @@ fn debug_command(cmd: &str) -> String {
             let v = c[5..].trim();
             match v {
                 "" => frontlight_status(),
-                "auto" => { let _ = repo::set_conf("frontlight", "auto"); frontlight_apply(true); frontlight_status() }
-                "off" => { let _ = repo::set_conf("frontlight", "off"); frontlight_apply(true); frontlight_status() }
-                "dark" => { let _ = repo::set_conf("frontlight", "dark"); frontlight_apply(true); frontlight_status() }
+                "auto" | "off" | "dark" => {
+                    let _ = manifest::set(&["display", "frontlight"], serde_json::json!(v));
+                    frontlight_apply(true);
+                    frontlight_status()
+                }
                 d if d.starts_with("dark ") => {
                     // :light dark <level> [<lux>]
                     let mut it = d[5..].split_whitespace();
                     match (it.next().and_then(|v| v.parse::<u32>().ok()), it.next().map(|v| v.parse::<u32>())) {
                         (Some(level), lux) if level <= FRONTLIGHT_MAX && !matches!(lux, Some(Err(_)) | Some(Ok(0))) => {
-                            let _ = repo::set_conf("dark_level", &level.to_string());
-                            if let Some(Ok(l)) = lux { let _ = repo::set_conf("dark_lux", &l.to_string()); }
-                            let _ = repo::set_conf("frontlight", "dark");
+                            let _ = manifest::set(&["display", "dark_level"], serde_json::json!(level));
+                            if let Some(Ok(l)) = lux { let _ = manifest::set(&["display", "dark_lux"], serde_json::json!(l)); }
+                            let _ = manifest::set(&["display", "frontlight"], serde_json::json!("dark"));
                             frontlight_apply(true);
                             frontlight_status()
                         }
@@ -1494,7 +1516,7 @@ fn debug_command(cmd: &str) -> String {
                     _ => "usage: :light learn <0-24>".into(),
                 },
                 n => match n.parse::<u32>() {
-                    Ok(level) if level <= FRONTLIGHT_MAX => { let _ = repo::set_conf("frontlight", n); frontlight_apply(true); frontlight_status() }
+                    Ok(level) if level <= FRONTLIGHT_MAX => { let _ = manifest::set(&["display", "frontlight"], serde_json::json!(level.to_string())); frontlight_apply(true); frontlight_status() }
                     _ => "usage: :light auto|off|dark [level [lux]]|<0-24>|learn <0-24>|nightlight on|off".into(),
                 },
             }
@@ -1506,19 +1528,20 @@ fn debug_command(cmd: &str) -> String {
                 Err(e) => format!("ssh: {e}"),
             },
             "off" => {
-                let _ = repo::set_conf("ssh", "off");
+                let _ = manifest::set(&["ssh", "enabled"], serde_json::json!(false));
                 ssh::stop();
-                "ssh=off".into()
+                "ssh.enabled = false".into()
             }
             "on" => {
-                let _ = repo::set_conf("ssh", "on");
+                let _ = manifest::set(&["ssh", "enabled"], serde_json::json!(true));
                 match ssh::ensure().and_then(|_| ssh::refresh()) {
                     Ok(s) => format!("ssh: on, {s}"),
                     Err(e) => format!("ssh: {e}"),
                 }
             }
             u if u.starts_with("users ") => {
-                let _ = repo::set_conf("ssh_users", u[6..].trim());
+                let users: Vec<String> = u[6..].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let _ = manifest::set(&["ssh", "users"], serde_json::json!(users));
                 match ssh::refresh() {
                     Ok(s) => format!("ssh: {s}"),
                     Err(e) => format!("ssh: {e}"),
@@ -1552,7 +1575,7 @@ fn debug_command(cmd: &str) -> String {
         },
         "power" => power::status(&power::load(repo::REPO)),
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
-        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :ssh [refresh|on|off|users a,b] :power :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
+        _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :ssh [refresh|on|off|users a,b] :power :manifest :set section.key=value :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
     }
 }
 
