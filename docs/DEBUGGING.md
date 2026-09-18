@@ -37,7 +37,7 @@ ssh kindle eink light dark 6 10        # any host command, as listed below witho
   | `:repo git@host:owner/repo.git` | set the git repository the app reads and writes (`:repo` alone shows it and whether git and dropbear are installed) |
   | `:ssh [refresh\|on\|off\|users a,b]` | SSH server status; refetch the GitHub keys; disable or enable; set the accounts |
   | `:sshkey` | the device's deploy key (generated on first use); add it to the repository with write access |
-  | `:sync` | pull the repository and the store now |
+  | `:sync` | pull the repository and the store now, holding the device awake until the pull has landed (also inside a timed wake), and report what changed |
   | `:tap x y`, `:key PageUp\|PageDown\|Power` | inject input, for scripted tests over the network |
   | `:slow ms` | log every input event slower than `ms` (default 80; `:slow 1` logs them all) |
   | `:log [n]` | the last `n` lines of host.log |

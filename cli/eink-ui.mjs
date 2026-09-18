@@ -230,11 +230,32 @@ async function sync() {
   run('git', ['pull', '-q', '--rebase', 'origin', branch]);
   run('git', ['push', '-q', 'origin', branch]);
   console.log(`eink-ui sync: pushed ${branch} (${git('rev-parse', '--short', 'HEAD').out})`);
-  // a reachable device pulls now; otherwise it pulls within 5 minutes awake or at its next wake
+  // the device pulls when told, and `eink sync` holds it awake until the pull has landed. Asleep,
+  // it wakes every 30 minutes for a few seconds, so keep trying for one such cycle.
   const device = process.env['EINK_DEVICE'] ?? 'kindle';
-  const r = spawnSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', device, 'eink', 'sync'], { encoding: 'utf8' });
-  if (r.status === 0) console.log(`eink-ui sync: ${device} is pulling (${r.stdout.trim()})`);
-  else console.log(`eink-ui sync: ${device} not reachable over ssh; it pulls at its next wake`);
+  const waitMinutes = args.includes('--no-wait') ? 0 : Number(process.env['EINK_WAIT_MINUTES'] ?? 35);
+  const deadline = Date.now() + waitMinutes * 60_000;
+  let told = false;
+  for (;;) {
+    const r = spawnSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=10', device, 'eink', 'sync'], { encoding: 'utf8' });
+    if (r.status === 0) {
+      console.log(`eink-ui sync: ${device} pulled:\n  ${r.stdout.trim().split('\n').join('\n  ')}`);
+      return;
+    }
+    if (r.status === 127 || /eink: not found/.test(r.stderr + r.stdout)) {
+      console.log(`eink-ui sync: ${device} answers but has no eink command yet (an older host); it pulls the new one at its next wake`);
+      return;
+    }
+    if (Date.now() >= deadline) {
+      console.log(`eink-ui sync: ${device} not reachable over ssh; it pulls at its next wake`);
+      return;
+    }
+    if (!told) {
+      console.log(`eink-ui sync: waiting for ${device} to wake (it does every 30 minutes; ctrl-c to stop waiting, the push is done)`);
+      told = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
 }
 
 function help() {

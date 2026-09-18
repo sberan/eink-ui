@@ -61,7 +61,8 @@ impl SyncState {
 
 pub enum SyncCmd {
     /// Pull, then push what is pending; the sender, if any, is told when it is done.
-    Now(Option<mpsc::Sender<()>>),
+    /// Pull now; the sender, if any, gets a one-line summary when the pull is done.
+    Now(Option<mpsc::Sender<String>>),
     /// Commit one written file; a push follows after a short debounce.
     Commit(String),
     /// Write a file the app just changed, then treat it as Commit.
@@ -454,9 +455,9 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                 Ok(Some(r)) => r,
                 Ok(None) | Err(_) => {
                     let why = match config() { Err(e) => e, _ => "no repo_url in keys.conf".into() };
-                    publish(SyncState { state: "offline", pending: 0, last_sync, error: Some(why) });
+                    publish(SyncState { state: "offline", pending: 0, last_sync, error: Some(why.clone()) });
                     if let Some(SyncCmd::Now(Some(ack))) = cmd {
-                        let _ = ack.send(());
+                        let _ = ack.send(format!("offline: {why}"));
                     }
                     continue;
                 }
@@ -464,7 +465,7 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
             if matches!(remote, Remote::Git(_)) && !tools_ready() {
                 publish(SyncState { state: "offline", pending: 0, last_sync, error: Some("git or dropbear missing".into()) });
                 if let Some(SyncCmd::Now(Some(ack))) = cmd {
-                    let _ = ack.send(());
+                    let _ = ack.send("offline: git or dropbear missing".into());
                 }
                 continue;
             }
@@ -518,23 +519,30 @@ pub fn start(tx: mpsc::Sender<Event>) -> (mpsc::Sender<SyncCmd>, Arc<Mutex<SyncS
                             Ok(changed)
                         }),
                     };
-                    match result {
+                    let summary = match result {
                         Ok(changed) => {
                             last_sync = Some(now_ms());
                             push_due = None;
+                            let summary = if changed.is_empty() {
+                                "up to date".to_string()
+                            } else {
+                                format!("{} file(s) changed: {}", changed.len(), changed.join(", "))
+                            };
                             if !changed.is_empty() {
                                 log(&format!("repo: {} file(s) changed", changed.len()));
                                 let _ = tx.send(Event::Files(changed));
                             }
                             publish(SyncState { state: "idle", pending: pending(&dirty), last_sync, error: None });
+                            summary
                         }
                         Err(e) => {
                             log(&format!("repo: sync failed: {e:#}"));
                             publish(SyncState { state: "error", pending: pending(&dirty), last_sync, error: Some(format!("{e:#}")) });
+                            format!("sync failed: {e:#}")
                         }
-                    }
+                    };
                     if let Some(ack) = ack {
-                        let _ = ack.send(());
+                        let _ = ack.send(summary);
                     }
                 }
                 None => {

@@ -72,12 +72,15 @@ npx eink-ui init my-kindle   # the repository and the example app (git init, npm
 cd my-kindle
 npm run dev                  # http://127.0.0.1:5173: your app on the real core, rebuilt as you save
 npm run build                # dist/app.js and bin/eink-host (the host at eink-ui's version)
-npm run sync                 # commit, push, and tell a reachable device (ssh kindle) to pull
+npm run sync                 # commit, push, then wait for the device (ssh kindle) and make it pull
 ```
 
 `package.json` is the whole contract: `main` is the bundle the device runs, the `eink` section
 its settings (see [docs/DEBUGGING.md](docs/DEBUGGING.md)), and the `eink-ui` dependency
-version is the host version that `build` puts in `bin/`. Debugging is `ssh kindle eink ...`.
+version is the host version that `build` puts in `bin/`. `sync` waits for the device to be
+reachable, up to one of its 30 minute wake cycles, and the device holds itself awake until the
+pull has landed, so when `sync` returns the Kindle runs what you pushed. Debugging is
+`ssh kindle eink ...`.
 
 ## Run it on a Kindle
 

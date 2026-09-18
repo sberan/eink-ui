@@ -193,6 +193,17 @@ static DEBUG_CLIENTS: std::sync::Mutex<Vec<std::os::unix::net::UnixStream>> = st
 /// The control socket `eink` (over SSH) talks to; the reply to a command ends with an RS line.
 const CTL_SOCKET: &str = "/var/tmp/eink.sock";
 const CTL_END: &str = "\u{1e}";
+/// Epoch seconds until which the device must not suspend: `eink sync` holds it while a pull
+/// lands, including inside a timed wake, so `eink-ui sync` can rely on the result.
+static HOLD_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn hold_awake(secs: u64) {
+    HOLD_UNTIL.store(now_secs().saturating_add(secs), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn held() -> bool {
+    now_secs() < HOLD_UNTIL.load(std::sync::atomic::Ordering::Relaxed)
+}
 static LAST_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 const BADGE: u32 = 36; // error badge: black rounded square with a white "!" in the top-right corner
@@ -879,7 +890,7 @@ fn main() -> Result<()> {
                     }
                 }
                 if restart {
-                    restart_self("/var/tmp/eink-host-run");
+                    restart_after_reply();
                 }
                 Some(serde_json::json!({"type": "files", "changed": changed}).to_string())
             }
@@ -959,7 +970,7 @@ fn main() -> Result<()> {
         // suspend stage is skipped and the device stays in the stage before it.
         let idle = last_input.elapsed();
         let mut want = power::stage_at(&stages, idle);
-        if stages[want].suspend && charging() {
+        if stages[want].suspend && (charging() || held()) {
             want = want.saturating_sub(1);
         }
         let (stage_name, stage_functions, suspend, wake_every) =
@@ -1107,6 +1118,9 @@ fn ctl(args: &[String]) -> i32 {
             return 0;
         }
         println!("{l}");
+    }
+    if !follow {
+        println!("(the host restarted before answering, which a sync that installed a new bundle or host does)");
     }
     0
 }
@@ -1358,6 +1372,18 @@ fn saved_idle() -> Option<Duration> {
     (idle < 24 * 3600).then(|| Duration::from_secs(idle))
 }
 
+/// Restarts at once, unless `eink sync` is waiting for its reply: then the reply goes first.
+fn restart_after_reply() {
+    if held() {
+        bg(|| {
+            std::thread::sleep(Duration::from_millis(1500));
+            restart_self("/var/tmp/eink-host-run");
+        });
+    } else {
+        restart_self("/var/tmp/eink-host-run");
+    }
+}
+
 fn restart_self(path: &str) -> ! {
     use std::os::unix::process::CommandExt;
     let last_input = now_secs().saturating_sub(power::IDLE_SECS.load(std::sync::atomic::Ordering::Relaxed));
@@ -1606,26 +1632,37 @@ fn debug_command(cmd: &str) -> String {
             Ok(k) => k,
             Err(e) => format!("no key: {e:#}"),
         },
-        "sync" => match {
-            if let Ok(g) = REPO_CMD.lock() {
-                if let Some(cmd) = g.as_ref() {
-                    let _ = cmd.send(repo::SyncCmd::Now(None));
+        "sync" => {
+            // holds the device awake until the pull has landed, so `eink-ui sync` can rely on it;
+            // a bundle or host that arrives restarts the host right after this reply
+            hold_awake(180);
+            let repo_result = match REPO_CMD.lock().ok().and_then(|g| g.clone()) {
+                Some(cmd) => {
+                    let (rtx, rrx) = mpsc::channel();
+                    if cmd.send(repo::SyncCmd::Now(Some(rtx))).is_ok() {
+                        rrx.recv_timeout(Duration::from_secs(150)).unwrap_or_else(|_| "timed out".into())
+                    } else {
+                        "worker not running".into()
+                    }
                 }
-            }
-            sync_files()
-        } {
-            Ok(out) => {
-                if out.app_changed || out.host_changed {
-                    bg(|| {
-                        std::thread::sleep(Duration::from_millis(300));
-                        restart_self("/var/tmp/eink-host-run");
-                    });
+                None => "not configured".into(),
+            };
+            let store = match sync_files() {
+                Ok(out) => {
+                    if out.app_changed || out.host_changed {
+                        bg(|| {
+                            std::thread::sleep(Duration::from_millis(1500));
+                            restart_self("/var/tmp/eink-host-run");
+                        });
+                    }
+                    format!("store: changed [{}] removed [{}]{}", out.changed.join(", "), out.removed.join(", "),
+                        if out.app_changed || out.host_changed { "; restarting" } else { "" })
                 }
-                format!("changed: [{}] removed: [{}]{}", out.changed.join(", "), out.removed.join(", "),
-                    if out.app_changed || out.host_changed { "; restarting" } else { "" })
-            }
-            Err(e) => format!("sync failed: {e:#}"),
-        },
+                Err(e) => format!("store: {e:#}"),
+            };
+            hold_awake(5);
+            format!("repo: {repo_result}\n{store}")
+        }
         "power" => power::status(&power::load()),
         "battery" => format!("charging={} {}", charging(), fs::read_to_string("/sys/devices/system/wario_battery/wario_battery0/battery_capacity").map(|s| s.trim().to_string() + "%").unwrap_or_default()),
         _ => "commands: :reload :update :restart :exit :battery :url [https://host/dir/] :sync :repo [git@host:owner/repo.git] :ssh [refresh|on|off|users a,b] :power :settings :set section.key=value :sshkey :tap <x> <y> :key PageUp|PageDown :slow <ms> :log [n] :conf key=value :ls <dir> :cat <file> :theme dark|light :light auto|off|<n>".into(),
@@ -1713,7 +1750,7 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd
                             let _ = fs::write(format!("{DIR}/eink-host"), &b);
                             let _ = install_host_binary(&b);
                         }
-                        restart_self("/var/tmp/eink-host-run");
+                        restart_after_reply();
                     }
                     deferred.push(Event::Files(changed));
                 }
@@ -1724,6 +1761,12 @@ fn sleep_cycle(rx: &mpsc::Receiver<Event>, repo_cmd: &mpsc::Sender<repo::SyncCmd
             }
         }
         if wake {
+            break;
+        }
+        if held() {
+            // a sync asked over SSH during this wake: the main loop keeps the device awake until
+            // the pull has landed, then the stage policy suspends it again
+            log("held awake for a sync");
             break;
         }
     }
